@@ -1568,12 +1568,15 @@ private fun ProcessGroupCard(
         statusDetail = state.statusDetail,
         isLive = isLive,
     )
-    var expanded by remember(group?.key ?: "live-process") { mutableStateOf(false) }
+    var expanded by remember(group?.key ?: "live-process") { mutableStateOf(isLive) }
     LaunchedEffect(approval?.requestId) {
         if (approval != null) expanded = true
     }
     LaunchedEffect(isLive) {
-        if (!isLive) expanded = false
+        // Match the desktop lifecycle: reveal each thought/tool/command while
+        // the turn is running, then collapse the whole process only after the
+        // final answer completes. The user can still reopen it afterwards.
+        expanded = isLive
     }
     Card(
         shape = RoundedCornerShape(10.dp),
