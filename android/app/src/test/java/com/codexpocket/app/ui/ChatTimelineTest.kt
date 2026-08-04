@@ -108,6 +108,42 @@ class ChatTimelineTest {
         assertEquals("final", (timeline[3] as TimelineMessage).message.id)
     }
 
+    @Test
+    fun `desktop style activity summary keeps commands on one useful line`() {
+        val command = ChatMessage(
+            id = "command",
+            turnId = "turn-1",
+            role = "tool",
+            text = "long command output",
+            kind = "commandExecution",
+            command = "rg -n processActivitySummary android",
+            status = "completed",
+        )
+
+        assertEquals(
+            "已运行 rg -n processActivitySummary android",
+            processActivitySummary(command),
+        )
+        assertEquals(
+            "正在运行 rg -n processActivitySummary android",
+            processActivitySummary(command, activeOverride = true),
+        )
+    }
+
+    @Test
+    fun `live status prefers the latest unfinished activity`() {
+        val status = processLiveStatus(
+            activities = listOf(
+                ActivityEntry("old", "旧命令", phase = "completed"),
+                ActivityEntry("current", "正在检查", detail = "同步消息", phase = "started"),
+            ),
+            currentStatus = "正在处理",
+            statusDetail = "备用状态",
+        )
+
+        assertEquals("正在检查 · 同步消息", status)
+    }
+
     private fun message(
         id: String,
         role: String = "assistant",

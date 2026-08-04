@@ -1739,105 +1739,97 @@ private fun ProcessGroupCard(
     }
     Card(
         shape = RoundedCornerShape(10.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isLive) {
+                MaterialTheme.colorScheme.background
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
+            },
+        ),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column {
-            Row(
-                Modifier.fillMaxWidth().heightIn(min = if (compact) 38.dp else 44.dp)
-                    .combinedClickable(
-                        onClick = {},
-                        onDoubleClick = {
-                            viewModel.setProcessGroupExpanded(disclosureKey, !expanded)
-                        },
-                    )
-                    .padding(horizontal = 11.dp, vertical = if (compact) 5.dp else 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (isLive) {
-                    CircularProgressIndicator(
-                        Modifier.size(14.dp),
-                        strokeWidth = 1.8.dp,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                } else {
+            if (!isLive) {
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = if (compact) 36.dp else 40.dp)
+                        .combinedClickable(
+                            onClick = {},
+                            onDoubleClick = {
+                                viewModel.setProcessGroupExpanded(disclosureKey, !expanded)
+                            },
+                        )
+                        .padding(horizontal = 11.dp, vertical = if (compact) 5.dp else 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Icon(
                         Icons.Rounded.Code,
                         null,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(15.dp),
                     )
-                }
-                Spacer(Modifier.width(8.dp))
-                Column(Modifier.weight(1f)) {
+                    Spacer(Modifier.width(8.dp))
+                    val completedStepCount = messages.count { !isProcessCommentary(it) }
                     Text(
-                        if (isLive) state.currentStatus.ifBlank { "Codex 正在处理…" } else "过程",
+                        "已完成 · ${completedStepCount.coerceAtLeast(messages.size.coerceAtMost(1))} 步",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    Spacer(Modifier.width(8.dp))
                     if (progressPreview.isNotBlank()) {
                         Text(
                             progressPreview,
+                            modifier = Modifier.weight(1f),
                             fontSize = (fontSizeSp - 4f).coerceAtLeast(10f).sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = liveTextAlpha),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.66f),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
+                    } else {
+                        Spacer(Modifier.weight(1f))
                     }
-                }
-                if (messages.isNotEmpty()) {
-                    Text(
-                        "${messages.size} 条",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.outline,
+                    Icon(
+                        if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        if (expanded) "双击收起过程" else "双击展开过程",
+                        tint = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.size(18.dp),
                     )
-                    Spacer(Modifier.width(4.dp))
                 }
-                Icon(
-                    if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                    if (expanded) "收起全部过程" else "展开全部过程",
-                    tint = MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.size(18.dp),
-                )
             }
-            if (expanded) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            if (isLive || expanded) {
+                if (!isLive) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Column(Modifier.padding(horizontal = 12.dp, vertical = if (compact) 7.dp else 10.dp)) {
-                    if (isLive && state.statusDetail.isNotBlank()) {
-                        Text(
-                            state.statusDetail,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 5,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    if (recentActivities.isNotEmpty()) {
-                        if (isLive && state.statusDetail.isNotBlank()) {
-                            HorizontalDivider(Modifier.padding(vertical = 9.dp))
-                        }
-                        recentActivities.forEach { ActivityRow(it, fontSizeSp) }
-                    }
                     messages.forEachIndexed { index, message ->
-                        if (recentActivities.isNotEmpty() || index > 0) {
-                            HorizontalDivider(Modifier.padding(vertical = 9.dp))
+                        if (index > 0) {
+                            Spacer(Modifier.height(if (compact) 6.dp else 9.dp))
                         }
-                        ProcessMessageDisclosure(
-                            message = message,
-                            groupKey = disclosureKey,
-                            endpoint = endpoint,
-                            token = token,
-                            state = state,
-                            viewModel = viewModel,
-                            fontSizeSp = fontSizeSp,
-                            compact = compact,
-                        )
+                        if (isProcessCommentary(message)) {
+                            ProcessCommentary(
+                                message = message,
+                                endpoint = endpoint,
+                                token = token,
+                                fontSizeSp = fontSizeSp,
+                                compact = compact,
+                            )
+                        } else {
+                            ProcessActivityDisclosure(
+                                message = message,
+                                groupKey = disclosureKey,
+                                endpoint = endpoint,
+                                token = token,
+                                state = state,
+                                viewModel = viewModel,
+                                activeOverride = recentActivities.lastOrNull { it.id == message.id }
+                                    ?.let { it.phase != "completed" },
+                                fontSizeSp = fontSizeSp,
+                                compact = compact,
+                            )
+                        }
                     }
                     approval?.let {
-                        if (recentActivities.isNotEmpty() || messages.isNotEmpty()) {
+                        if (messages.isNotEmpty()) {
                             HorizontalDivider(Modifier.padding(vertical = 9.dp))
                         }
                         if (it.canApprove) {
@@ -1850,6 +1842,31 @@ private fun ProcessGroupCard(
                                 "这种交互暂时不能在手机上直接回答；可以停止任务，再把答案作为新消息发送。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (isLive) {
+                        val liveStatus = processLiveStatus(
+                            activities = recentActivities,
+                            currentStatus = state.currentStatus,
+                            statusDetail = state.statusDetail,
+                        )
+                        if (messages.isNotEmpty() || approval != null) {
+                            Spacer(Modifier.height(if (compact) 9.dp else 13.dp))
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                Modifier.size(6.dp).clip(CircleShape).background(
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = liveTextAlpha),
+                                ),
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                liveStatus,
+                                fontSize = (fontSizeSp - 3f).coerceAtLeast(10f).sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = liveTextAlpha),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                     }
@@ -1872,13 +1889,14 @@ private fun ProcessGroupCard(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ProcessMessageDisclosure(
+private fun ProcessActivityDisclosure(
     message: ChatMessage,
     groupKey: String,
     endpoint: String,
     token: String,
     state: UiState,
     viewModel: MainViewModel,
+    activeOverride: Boolean?,
     fontSizeSp: Float,
     compact: Boolean,
 ) {
@@ -1887,68 +1905,131 @@ private fun ProcessMessageDisclosure(
     val scrollState = remember(itemKey) {
         androidx.compose.foundation.ScrollState(viewModel.processItemScrollOffset(itemKey))
     }
-    val preview = message.command.orEmpty().ifBlank { message.text }
-        .replace(Regex("\\s+"), " ")
-        .trim()
-        .take(140)
     DisposableEffect(itemKey) {
         onDispose { viewModel.saveProcessItemScrollOffset(itemKey, scrollState.value) }
     }
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column {
-            Row(
-                Modifier.fillMaxWidth()
-                    .combinedClickable(
-                        onClick = {},
-                        onDoubleClick = {
-                            viewModel.saveProcessItemScrollOffset(itemKey, scrollState.value)
-                            viewModel.setProcessItemExpanded(itemKey, !expanded)
-                        },
-                    )
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        internalMessageTitle(message),
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    if (preview.isNotBlank()) {
-                        Text(
-                            preview,
-                            fontSize = (fontSizeSp - 3f).coerceAtLeast(10f).sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.68f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth()
+                .combinedClickable(
+                    onClick = {},
+                    onDoubleClick = {
+                        viewModel.saveProcessItemScrollOffset(itemKey, scrollState.value)
+                        viewModel.setProcessItemExpanded(itemKey, !expanded)
+                    },
+                )
+                .padding(vertical = if (compact) 3.dp else 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                if (message.kind == "imageView" || message.kind == "imageGeneration") {
+                    Icons.Rounded.AddPhotoAlternate
+                } else {
+                    Icons.Rounded.Code
+                },
+                null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(9.dp))
+            Text(
+                processActivitySummary(message, activeOverride),
+                modifier = Modifier.weight(1f),
+                fontSize = (fontSizeSp - 2f).coerceAtLeast(11f).sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (message.text.isNotBlank() || !message.command.isNullOrBlank() || message.attachments.isNotEmpty()) {
                 Icon(
                     if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                    if (expanded) "双击收起这条过程" else "双击展开这条过程",
+                    if (expanded) "双击收起详情" else "双击查看详情",
                     tint = MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.size(18.dp),
+                    modifier = Modifier.size(16.dp),
                 )
             }
-            if (expanded) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Box(
-                    Modifier.fillMaxWidth()
-                        .heightIn(max = if (compact) 340.dp else 430.dp)
-                        .verticalScroll(scrollState)
-                        .padding(10.dp),
-                ) {
-                    ProcessMessageContent(message, endpoint, token, fontSizeSp, compact)
-                }
+        }
+        if (expanded) {
+            Box(
+                Modifier.fillMaxWidth()
+                    .padding(start = 24.dp, top = 3.dp)
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.72f))
+                    .heightIn(max = if (compact) 340.dp else 430.dp)
+                    .verticalScroll(scrollState)
+                    .padding(10.dp),
+            ) {
+                ProcessMessageContent(message, endpoint, token, fontSizeSp, compact)
             }
         }
     }
+}
+
+@Composable
+private fun ProcessCommentary(
+    message: ChatMessage,
+    endpoint: String,
+    token: String,
+    fontSizeSp: Float,
+    compact: Boolean,
+) {
+    if (message.text.isNotBlank()) {
+        MarkdownText(
+            markdown = message.text,
+            color = MaterialTheme.colorScheme.onSurface,
+            linkColor = MaterialTheme.colorScheme.primary,
+            fontSizeSp = fontSizeSp,
+            compact = compact,
+        )
+    }
+    if (message.attachments.isNotEmpty()) {
+        if (message.text.isNotBlank()) Spacer(Modifier.height(8.dp))
+        MediaGallery(message.attachments, endpoint, token)
+    }
+}
+
+private fun isProcessCommentary(message: ChatMessage): Boolean =
+    message.role == "assistant" && message.kind == "agentMessage"
+
+internal fun processActivitySummary(message: ChatMessage, activeOverride: Boolean? = null): String {
+    val active = activeOverride ?: (
+        message.status.orEmpty().lowercase() in setOf(
+            "inprogress",
+            "started",
+            "running",
+        )
+    )
+    val completed = !active
+    val prefix = if (active) "正在" else "已"
+    val detail = message.command.orEmpty().ifBlank { message.text }
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .take(150)
+    return when (message.kind) {
+        "commandExecution" -> if (detail.isBlank()) "${prefix}运行命令" else "${prefix}运行 $detail"
+        "imageView" -> "${prefix}查看 ${message.attachments.size.coerceAtLeast(1)} 张图像"
+        "imageGeneration" -> if (completed) "已生成图像" else "正在生成图像"
+        "reasoning" -> if (completed) "已完成思考" else "正在思考"
+        "plan" -> if (completed) "已更新计划" else "正在更新计划"
+        "fileChange" -> if (detail.isBlank()) "${prefix}修改文件" else "${prefix}修改 $detail"
+        "mcpToolCall", "dynamicToolCall" -> if (detail.isBlank()) "${prefix}调用工具" else "${prefix}调用 $detail"
+        "collabAgentToolCall" -> if (detail.isBlank()) "${prefix}运行协作任务" else "${prefix}运行 $detail"
+        "webSearch" -> if (completed) "已搜索网络" else "正在搜索网络"
+        "contextCompaction" -> if (completed) "已整理上下文" else "正在整理上下文"
+        else -> internalMessageTitle(message) + detail.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()
+    }
+}
+
+internal fun processLiveStatus(
+    activities: List<ActivityEntry>,
+    currentStatus: String,
+    statusDetail: String,
+): String {
+    val active = activities.lastOrNull { it.phase != "completed" }
+    return listOfNotNull(
+        active?.let { listOf(it.title, it.detail).filter(String::isNotBlank).joinToString(" · ") },
+        listOf(currentStatus, statusDetail).filter(String::isNotBlank).joinToString(" · "),
+    ).firstOrNull(String::isNotBlank) ?: "Codex 正在处理…"
 }
 
 internal fun processProgressPreview(

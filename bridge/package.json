@@ -1,6 +1,6 @@
 {
   "name": "codex-pocket-bridge",
-  "version": "0.15.6",
+  "version": "0.15.7",
   "private": true,
   "type": "module",
   "description": "A small, authenticated bridge between Codex App Server and the Codex Pocket Android client.",
