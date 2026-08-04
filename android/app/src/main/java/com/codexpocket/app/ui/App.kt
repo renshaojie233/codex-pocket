@@ -25,6 +25,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -114,6 +115,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -122,6 +124,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -172,7 +175,6 @@ import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -1370,6 +1372,9 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
     }
     val needsStandaloneLiveProcess = showsStatus && liveProcessKey == null
     val contentCount = timeline.size + if (needsStandaloneLiveProcess) 1 else 0
+    val savedScrollPosition = remember(thread.id) { viewModel.chatScrollPosition(thread.id) }
+    val latestTimeline by rememberUpdatedState(timeline)
+    val latestNeedsStandaloneProcess by rememberUpdatedState(needsStandaloneLiveProcess)
     var threadMenuExpanded by remember { mutableStateOf(false) }
     var confirmArchive by remember { mutableStateOf(false) }
     var hasPositionedInitially by remember(thread.id) { mutableStateOf(false) }
@@ -1379,6 +1384,23 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
             val total = listState.layoutInfo.totalItemsCount
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
             hasPositionedInitially && total > 0 && lastVisible < total - 2
+        }
+    }
+
+    DisposableEffect(thread.id) {
+        onDispose {
+            val firstIndex = listState.firstVisibleItemIndex
+            val itemKey = latestTimeline.getOrNull(firstIndex)?.key
+                ?: "live-process".takeIf {
+                    latestNeedsStandaloneProcess && firstIndex == latestTimeline.size
+                }
+            if (itemKey != null) {
+                viewModel.saveChatScrollPosition(
+                    thread.id,
+                    itemKey,
+                    listState.firstVisibleItemScrollOffset,
+                )
+            }
         }
     }
 
@@ -1393,9 +1415,20 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
         if (contentCount <= 0) return@LaunchedEffect
         val latestIndex = contentCount - 1
         if (!hasPositionedInitially) {
-            // Opening a long task should feel immediate: jump to the newest turn
-            // after history arrives, without replaying the whole conversation.
-            listState.scrollToItem(latestIndex)
+            val restoredIndex = savedScrollPosition?.first?.let { savedKey ->
+                timeline.indexOfFirst { it.key == savedKey }.takeIf { it >= 0 }
+                    ?: timeline.size.takeIf {
+                        savedKey == "live-process" && needsStandaloneLiveProcess
+                    }
+            }
+            if (savedScrollPosition != null && restoredIndex == null && state.isLoading) {
+                return@LaunchedEffect
+            }
+            if (restoredIndex != null) {
+                listState.scrollToItem(restoredIndex, savedScrollPosition?.second ?: 0)
+            } else {
+                listState.scrollToItem(latestIndex)
+            }
             hasPositionedInitially = true
         } else {
             val previousLastIndex = (previousContentCount - 1).coerceAtLeast(0)
@@ -1594,8 +1627,6 @@ private fun ChatScrollbar(
     val canScroll = listState.canScrollBackward || listState.canScrollForward
     var trackHeightPx by remember { mutableIntStateOf(0) }
     var isDragging by remember { mutableStateOf(false) }
-    var targetIndex by remember { mutableIntStateOf(0) }
-    var targetOffsetPx by remember { mutableIntStateOf(0) }
     if (!canScroll || totalItems <= 0 || visibleItems.isEmpty()) return
 
     val density = LocalDensity.current
@@ -1619,34 +1650,22 @@ private fun ChatScrollbar(
     }
     val thumbTravelPx = (trackHeightPx - thumbHeightPx).coerceAtLeast(1f)
     val thumbTopPx = scrollFraction * thumbTravelPx
-
-    LaunchedEffect(isDragging, targetIndex, targetOffsetPx) {
-        if (isDragging) listState.scrollToItem(targetIndex, targetOffsetPx)
-    }
+    val estimatedScrollableHeightPx =
+        (estimatedItemSizePx * totalItems - viewportHeightPx).coerceAtLeast(1f)
+    val contentPixelsPerTrackPixel = (estimatedScrollableHeightPx / thumbTravelPx)
+        .coerceIn(1f, 48f)
 
     Box(
         modifier
             .fillMaxHeight()
             .width(24.dp)
             .onSizeChanged { trackHeightPx = it.height }
-            .pointerInput(totalItems, trackHeightPx, thumbHeightPx, maxPosition) {
-                fun updateTarget(pointerY: Float) {
-                    val fraction = ((pointerY - thumbHeightPx / 2f) / thumbTravelPx)
-                        .coerceIn(0f, 1f)
-                    val targetPosition = fraction * maxPosition
-                    targetIndex = floor(targetPosition).toInt().coerceIn(0, totalItems - 1)
-                    targetOffsetPx = ((targetPosition - targetIndex) * estimatedItemSizePx)
-                        .roundToInt()
-                        .coerceAtLeast(0)
-                }
+            .pointerInput(totalItems, trackHeightPx) {
                 detectVerticalDragGestures(
-                    onDragStart = { offset ->
-                        isDragging = true
-                        updateTarget(offset.y)
-                    },
-                    onVerticalDrag = { change, _ ->
+                    onDragStart = { isDragging = true },
+                    onVerticalDrag = { change, dragAmount ->
                         change.consume()
-                        updateTarget(change.position.y)
+                        listState.dispatchRawDelta(dragAmount * contentPixelsPerTrackPixel)
                     },
                     onDragEnd = { isDragging = false },
                     onDragCancel = { isDragging = false },
@@ -1669,6 +1688,7 @@ private fun ChatScrollbar(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ProcessGroupCard(
     group: TimelineProcess?,
@@ -1681,6 +1701,8 @@ private fun ProcessGroupCard(
     compact: Boolean,
 ) {
     val messages = group?.messages.orEmpty()
+    val disclosureKey = "${state.selectedThread?.id}:${group?.key ?: "live-process"}"
+    val expanded = disclosureKey in state.expandedProcessGroups
     val approval = state.pendingApproval.takeIf { isLive }
     val recentActivities = state.activities.takeLast(8).takeIf { isLive }.orEmpty()
     val progressPreview = processProgressPreview(
@@ -1703,15 +1725,17 @@ private fun ProcessGroupCard(
     } else {
         0.58f
     }
-    var expanded by remember(group?.key ?: "live-process") { mutableStateOf(isLive) }
+    var wasLive by remember(disclosureKey) { mutableStateOf(isLive) }
     LaunchedEffect(approval?.requestId) {
-        if (approval != null) expanded = true
+        if (approval != null) viewModel.setProcessGroupExpanded(disclosureKey, true)
     }
     LaunchedEffect(isLive) {
-        // Match the desktop lifecycle: reveal each thought/tool/command while
-        // the turn is running, then collapse the whole process only after the
-        // final answer completes. The user can still reopen it afterwards.
-        expanded = isLive
+        if (isLive) {
+            viewModel.setProcessGroupExpanded(disclosureKey, true)
+        } else if (wasLive) {
+            viewModel.setProcessGroupExpanded(disclosureKey, false)
+        }
+        wasLive = isLive
     }
     Card(
         shape = RoundedCornerShape(10.dp),
@@ -1721,7 +1745,12 @@ private fun ProcessGroupCard(
         Column {
             Row(
                 Modifier.fillMaxWidth().heightIn(min = if (compact) 38.dp else 44.dp)
-                    .clickable { expanded = !expanded }
+                    .combinedClickable(
+                        onClick = {},
+                        onDoubleClick = {
+                            viewModel.setProcessGroupExpanded(disclosureKey, !expanded)
+                        },
+                    )
                     .padding(horizontal = 11.dp, vertical = if (compact) 5.dp else 7.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -1796,7 +1825,16 @@ private fun ProcessGroupCard(
                         if (recentActivities.isNotEmpty() || index > 0) {
                             HorizontalDivider(Modifier.padding(vertical = 9.dp))
                         }
-                        ProcessMessageContent(message, endpoint, token, fontSizeSp, compact)
+                        ProcessMessageDisclosure(
+                            message = message,
+                            groupKey = disclosureKey,
+                            endpoint = endpoint,
+                            token = token,
+                            state = state,
+                            viewModel = viewModel,
+                            fontSizeSp = fontSizeSp,
+                            compact = compact,
+                        )
                     }
                     approval?.let {
                         if (recentActivities.isNotEmpty() || messages.isNotEmpty()) {
@@ -1826,6 +1864,87 @@ private fun ProcessGroupCard(
                             color = MaterialTheme.colorScheme.outline,
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ProcessMessageDisclosure(
+    message: ChatMessage,
+    groupKey: String,
+    endpoint: String,
+    token: String,
+    state: UiState,
+    viewModel: MainViewModel,
+    fontSizeSp: Float,
+    compact: Boolean,
+) {
+    val itemKey = "$groupKey:${message.id}"
+    val expanded = itemKey in state.expandedProcessItems
+    val scrollState = remember(itemKey) {
+        androidx.compose.foundation.ScrollState(viewModel.processItemScrollOffset(itemKey))
+    }
+    val preview = message.command.orEmpty().ifBlank { message.text }
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .take(140)
+    DisposableEffect(itemKey) {
+        onDispose { viewModel.saveProcessItemScrollOffset(itemKey, scrollState.value) }
+    }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column {
+            Row(
+                Modifier.fillMaxWidth()
+                    .combinedClickable(
+                        onClick = {},
+                        onDoubleClick = {
+                            viewModel.saveProcessItemScrollOffset(itemKey, scrollState.value)
+                            viewModel.setProcessItemExpanded(itemKey, !expanded)
+                        },
+                    )
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        internalMessageTitle(message),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    if (preview.isNotBlank()) {
+                        Text(
+                            preview,
+                            fontSize = (fontSizeSp - 3f).coerceAtLeast(10f).sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.68f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Icon(
+                    if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                    if (expanded) "双击收起这条过程" else "双击展开这条过程",
+                    tint = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            if (expanded) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Box(
+                    Modifier.fillMaxWidth()
+                        .heightIn(max = if (compact) 340.dp else 430.dp)
+                        .verticalScroll(scrollState)
+                        .padding(10.dp),
+                ) {
+                    ProcessMessageContent(message, endpoint, token, fontSizeSp, compact)
                 }
             }
         }
@@ -1864,12 +1983,6 @@ private fun ProcessMessageContent(
     compact: Boolean,
 ) {
     val isTool = message.role == "tool"
-    Text(
-        internalMessageTitle(message),
-        style = MaterialTheme.typography.labelMedium,
-        fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.primary,
-    )
     if (!message.command.isNullOrBlank()) {
         Text(
             message.command,

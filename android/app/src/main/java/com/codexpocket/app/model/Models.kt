@@ -197,4 +197,6 @@ data class UiState(
     val isUploadingImages: Boolean = false,
     val hasOlderMessages: Boolean = false,
     val isLoadingOlderMessages: Boolean = false,
+    val expandedProcessGroups: Set<String> = emptySet(),
+    val expandedProcessItems: Set<String> = emptySet(),
 )

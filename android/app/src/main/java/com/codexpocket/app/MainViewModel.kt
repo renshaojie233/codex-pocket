@@ -58,6 +58,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         stats.copy(bytes = stats.bytes + PocketMediaLoader.sizeBytes(application))
     }
     private val cacheWriteJobs = ConcurrentHashMap<String, Job>()
+    private val processItemScrollOffsets = ConcurrentHashMap<String, Int>()
+    private val chatScrollPositions = ConcurrentHashMap<String, Pair<String, Int>>()
     private val discardedLocalMessageIds = preferences
         .getStringSet(DISCARDED_LOCAL_MESSAGES_PREFERENCE, emptySet())
         .orEmpty()
@@ -86,6 +88,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             ) ?: ":danger-full-access",
             messageCacheThreadCount = initialCacheStats.threadCount,
             messageCacheBytes = initialCacheStats.bytes,
+            expandedProcessGroups = preferences
+                .getStringSet(EXPANDED_PROCESS_GROUPS_PREFERENCE, emptySet())
+                .orEmpty()
+                .toSet(),
+            expandedProcessItems = preferences
+                .getStringSet(EXPANDED_PROCESS_ITEMS_PREFERENCE, emptySet())
+                .orEmpty()
+                .toSet(),
         ),
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -101,6 +111,71 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     fun setEndpoint(value: String) = _state.update { it.copy(endpoint = value) }
     fun setToken(value: String) = _state.update { it.copy(token = value) }
     fun setInput(value: String) = _state.update { it.copy(input = value) }
+
+    fun setProcessGroupExpanded(key: String, expanded: Boolean) {
+        if (key.isBlank()) return
+        _state.update { state ->
+            val updated = state.expandedProcessGroups.withExpansion(key, expanded)
+            preferences.edit { putStringSet(EXPANDED_PROCESS_GROUPS_PREFERENCE, updated) }
+            state.copy(expandedProcessGroups = updated)
+        }
+    }
+
+    fun setProcessItemExpanded(key: String, expanded: Boolean) {
+        if (key.isBlank()) return
+        _state.update { state ->
+            val updated = state.expandedProcessItems.withExpansion(key, expanded)
+            preferences.edit { putStringSet(EXPANDED_PROCESS_ITEMS_PREFERENCE, updated) }
+            state.copy(expandedProcessItems = updated)
+        }
+    }
+
+    fun processItemScrollOffset(key: String): Int = processItemScrollOffsets[key]
+        ?: preferences.getInt("$PROCESS_ITEM_SCROLL_PREFIX${key.preferenceSuffix()}", 0).also {
+            processItemScrollOffsets[key] = it
+        }
+
+    fun saveProcessItemScrollOffset(key: String, offset: Int) {
+        if (key.isBlank()) return
+        val safeOffset = offset.coerceAtLeast(0)
+        processItemScrollOffsets[key] = safeOffset
+        preferences.edit {
+            putInt("$PROCESS_ITEM_SCROLL_PREFIX${key.preferenceSuffix()}", safeOffset)
+        }
+    }
+
+    fun chatScrollPosition(threadId: String): Pair<String, Int>? = chatScrollPositions[threadId]
+        ?: preferences.getString(
+            "$CHAT_SCROLL_ITEM_PREFIX${threadId.preferenceSuffix()}",
+            null,
+        )?.let { itemKey ->
+            val restored = itemKey to preferences.getInt(
+                "$CHAT_SCROLL_OFFSET_PREFIX${threadId.preferenceSuffix()}",
+                0,
+            )
+            chatScrollPositions[threadId] = restored
+            restored
+        }
+
+    fun saveChatScrollPosition(threadId: String, itemKey: String, offset: Int) {
+        if (threadId.isNotBlank() && itemKey.isNotBlank()) {
+            val safeOffset = offset.coerceAtLeast(0)
+            chatScrollPositions[threadId] = itemKey to safeOffset
+            preferences.edit {
+                putString("$CHAT_SCROLL_ITEM_PREFIX${threadId.preferenceSuffix()}", itemKey)
+                putInt("$CHAT_SCROLL_OFFSET_PREFIX${threadId.preferenceSuffix()}", safeOffset)
+            }
+        }
+    }
+
+    private fun String.preferenceSuffix(): String = hashCode().toUInt().toString(16)
+
+    private fun Set<String>.withExpansion(key: String, expanded: Boolean): Set<String> {
+        val updated = toMutableSet()
+        if (expanded) updated += key else updated -= key
+        while (updated.size > MAX_REMEMBERED_DISCLOSURES) updated.remove(updated.first())
+        return updated
+    }
 
     fun addPendingImages(uriStrings: List<String>) {
         val existing = _state.value.pendingImages
@@ -1952,6 +2027,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         private const val COMPLETED_THREAD_SYNC_DELAY_MILLIS = 350L
         private const val DISCARDED_LOCAL_MESSAGES_PREFERENCE = "discarded-local-message-ids"
         private const val MAX_DISCARDED_LOCAL_MESSAGES = 500
+        private const val EXPANDED_PROCESS_GROUPS_PREFERENCE = "expanded-process-groups"
+        private const val EXPANDED_PROCESS_ITEMS_PREFERENCE = "expanded-process-items"
+        private const val MAX_REMEMBERED_DISCLOSURES = 500
+        private const val PROCESS_ITEM_SCROLL_PREFIX = "process-item-scroll-"
+        private const val CHAT_SCROLL_ITEM_PREFIX = "chat-scroll-item-"
+        private const val CHAT_SCROLL_OFFSET_PREFIX = "chat-scroll-offset-"
         private const val MAX_IMAGES_PER_MESSAGE = 4
         private const val MAX_IMAGE_BYTES = 15L * 1024L * 1024L
     }
