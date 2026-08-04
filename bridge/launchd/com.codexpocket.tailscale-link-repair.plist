@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.codexpocket.tailscale-link-repair</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/false</string>
+        <string>/path/to/codex-pocket/bridge/scripts/repair-tailscale-link.mjs</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/path/to/codex-pocket/bridge</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>CODEX_POCKET_TAILSCALE_PEER</key>
+        <string></string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>120</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>/path/to/codex-pocket/bridge/data/tailscale-link-repair.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/codex-pocket/bridge/data/tailscale-link-repair-error.log</string>
+</dict>
+</plist>

@@ -95,6 +95,16 @@ APK 接口支持 HTTP Range 与断点续传；移动网络中断后可直接在�
 
 以后只要 Mac 已登录系统、Tailscale 在线，就可以直接从手机连接。
 
+如果手机网络偶尔从 `direct` 退化到 DERP 中继，可以在安装开机服务时指定手机的
+Tailscale 设备名，启用每两分钟一次的轻量直连检查：
+
+```bash
+CODEX_POCKET_TAILSCALE_PEER=<手机设备名> ./bridge/scripts/install-launch-agent.sh
+```
+
+检测到活跃手机持续使用 DERP 时，守护检查会刷新 Mac 的 UDP/STUN 端点并重新协商；
+修复操作设有十分钟冷却时间，不会频繁重置连接。设备名只保存在本机 LaunchAgent 中。
+
 ## 常用命令
 
 ```bash
