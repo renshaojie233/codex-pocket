@@ -356,7 +356,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             putString("endpoint", endpoint)
             putString("token", token)
         }
-        _state.update { it.copy(connection = ConnectionState.Connecting, error = null) }
+        _state.update { it.copy(connection = ConnectionState.Connecting, isReconnecting = false, error = null) }
         client.connect(endpoint, token)
         if (_state.value.completionNotificationsEnabled) {
             TaskNotificationService.setEnabled(getApplication(), true)
@@ -390,6 +390,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         _state.update {
             it.copy(
                 connection = ConnectionState.Disconnected,
+                isReconnecting = false,
                 selectedThread = null,
                 messages = emptyList(),
                 activeTurnId = null,
@@ -616,30 +617,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         }
     }
 
-    fun openThread(thread: ThreadSummary) {
-        cacheCurrentMessages(delayMillis = 0)
+    fun openThread(thread: ThreadSummary) = loadThread(thread, preserveVisibleContent = false)
+
+    private fun refreshOpenThread(thread: ThreadSummary) =
+        loadThread(thread, preserveVisibleContent = true)
+
+    private fun loadThread(thread: ThreadSummary, preserveVisibleContent: Boolean) {
+        if (!preserveVisibleContent) cacheCurrentMessages(delayMillis = 0)
         val generation = ++threadLoadGeneration
+        val visibleMessages = _state.value.messages.takeIf { preserveVisibleContent }.orEmpty()
         _state.update {
-            it.copy(
-                selectedThread = thread,
-                messages = emptyList(),
-                isLoading = true,
-                error = null,
-                isSending = false,
-                activeTurnId = null,
-                currentStatus = "",
-                statusDetail = "",
-                activities = emptyList(),
-                pendingApproval = null,
-                goal = null,
-                pendingImages = emptyList(),
-                isUploadingImages = false,
-                hasOlderMessages = false,
-                isLoadingOlderMessages = false,
-            )
+            if (preserveVisibleContent) {
+                it.copy(selectedThread = thread, isLoading = false, error = null)
+            } else {
+                it.copy(
+                    selectedThread = thread,
+                    messages = emptyList(),
+                    isLoading = true,
+                    error = null,
+                    isSending = false,
+                    activeTurnId = null,
+                    currentStatus = "",
+                    statusDetail = "",
+                    activities = emptyList(),
+                    pendingApproval = null,
+                    goal = null,
+                    pendingImages = emptyList(),
+                    isUploadingImages = false,
+                    hasOlderMessages = false,
+                    isLoadingOlderMessages = false,
+                )
+            }
         }
         viewModelScope.launch {
-            val cached = withContext(Dispatchers.IO) { messageCache.read(thread.id) }
+            val cached = if (preserveVisibleContent) {
+                visibleMessages
+            } else {
+                withContext(Dispatchers.IO) { messageCache.read(thread.id) }
+            }
             if (generation != threadLoadGeneration || _state.value.selectedThread?.id != thread.id) {
                 return@launch
             }
@@ -1241,30 +1256,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     fun clearError() = _state.update { it.copy(error = null) }
 
     override fun onConnected() = onMain {
-        _state.update { it.copy(connection = ConnectionState.Connected, error = null) }
-        val selected = _state.value.selectedThread
-        if (selected == null) refreshThreads() else openThread(selected)
-        loadModels()
-        loadModes()
-        loadPermissionProfiles()
+        val previous = _state.value
+        val selected = previous.selectedThread
+        _state.update {
+            it.copy(connection = ConnectionState.Connected, isReconnecting = false, error = null)
+        }
+        if (selected == null) refreshThreads() else refreshOpenThread(selected)
+        if (previous.models.isEmpty()) loadModels()
+        if (previous.modes.isEmpty()) loadModes()
+        if (previous.permissionProfiles.isEmpty()) loadPermissionProfiles()
     }
 
     override fun onDisconnected(reason: String?) = onMain {
-        _state.update {
-            it.copy(
-                connection = ConnectionState.Disconnected,
+        _state.update { state ->
+            state.copy(
+                // Keep the current task visible during transient Tailscale or
+                // mobile-network handovers instead of jumping to login.
+                connection = if (state.connection == ConnectionState.Connected) {
+                    ConnectionState.Connected
+                } else {
+                    state.connection
+                },
+                isReconnecting = true,
                 isLoading = false,
-                error = reason?.takeIf { message -> message != "Client disconnect" },
+                error = null,
             )
         }
     }
 
     override fun onReconnecting(delaySeconds: Int) = onMain {
-        _state.update {
-            it.copy(
-                connection = ConnectionState.Connecting,
+        _state.update { state ->
+            state.copy(
+                connection = if (state.connection == ConnectionState.Connected) {
+                    ConnectionState.Connected
+                } else {
+                    ConnectionState.Connecting
+                },
+                isReconnecting = true,
                 error = null,
-                currentStatus = "连接中断，正在自动恢复…",
+                currentStatus = "网络波动，正在自动恢复…",
                 statusDetail = "$delaySeconds 秒后重试",
             )
         }
@@ -1638,6 +1668,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             role = item.optString("role"),
             text = item.optString("text"),
             kind = item.optString("kind"),
+            phase = item.optString("phase").ifBlank { null },
             command = item.optString("command").ifBlank { null },
             status = item.optString("status").ifBlank { null },
             attachments = attachments,

@@ -24,11 +24,20 @@ class BridgeClient(private val listener: Listener) {
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        .pingInterval(20, TimeUnit.SECONDS)
+        // A less aggressive heartbeat survives Xiaomi power scheduling and
+        // brief Tailscale handovers without declaring a healthy socket dead.
+        .pingInterval(45, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
-    private val callbacks = ConcurrentHashMap<String, (Result<JSONObject>) -> Unit>()
+    private data class PendingRequest(
+        val envelope: String,
+        val retryable: Boolean,
+        val callback: (Result<JSONObject>) -> Unit,
+        @Volatile var needsResend: Boolean = false,
+    )
+
+    private val callbacks = ConcurrentHashMap<String, PendingRequest>()
     private val reconnectHandler = Handler(Looper.getMainLooper())
     private var reconnectRunnable: Runnable? = null
     private var socket: WebSocket? = null
@@ -64,15 +73,24 @@ class BridgeClient(private val listener: Listener) {
         callback: (Result<JSONObject>) -> Unit,
     ) {
         val id = UUID.randomUUID().toString()
-        callbacks[id] = callback
         val envelope = JSONObject()
             .put("type", "request")
             .put("id", id)
             .put("method", method)
             .put("params", params)
-        if (socket?.send(envelope.toString()) != true) {
-            callbacks.remove(id)
-            callback(Result.failure(IllegalStateException("连接尚未就绪")))
+            .toString()
+        val pending = PendingRequest(
+            envelope = envelope,
+            retryable = isRetryableBridgeMethod(method),
+            callback = callback,
+        )
+        callbacks[id] = pending
+        if (socket?.send(envelope) != true) {
+            if (shouldReconnect && pending.retryable) {
+                pending.needsResend = true
+            } else if (callbacks.remove(id, pending)) {
+                callback(Result.failure(IllegalStateException("连接尚未就绪")))
+            }
         }
     }
 
@@ -116,6 +134,7 @@ class BridgeClient(private val listener: Listener) {
                     "hello" -> {
                         reconnectAttempt = 0
                         cancelReconnect()
+                        resendPending(webSocket)
                         listener.onConnected()
                     }
                     "response" -> handleResponse(message)
@@ -145,14 +164,22 @@ class BridgeClient(private val listener: Listener) {
             if (terminalHandled || connectionGeneration != generation) return
             terminalHandled = true
             if (socket === webSocket) socket = null
-            failPending(reason ?: "连接中断")
+            preserveRetryablePending(reason ?: "连接中断")
             scheduleReconnect(reason)
+        }
+    }
+
+    private fun resendPending(webSocket: WebSocket) {
+        callbacks.values.forEach { pending ->
+            if (pending.retryable && pending.needsResend && webSocket.send(pending.envelope)) {
+                pending.needsResend = false
+            }
         }
     }
 
     private fun handleResponse(message: JSONObject) {
         val id = message.optString("id")
-        val callback = callbacks.remove(id) ?: return
+        val callback = callbacks.remove(id)?.callback ?: return
         if (message.optBoolean("ok")) {
             callback(Result.success(message.optJSONObject("result") ?: JSONObject()))
         } else {
@@ -161,10 +188,31 @@ class BridgeClient(private val listener: Listener) {
     }
 
     private fun failPending(message: String) {
-        val pending = callbacks.values.toList()
+        val pending = callbacks.values.map { it.callback }
         callbacks.clear()
         pending.forEach { callback ->
             callback(Result.failure(IllegalStateException(message)))
         }
     }
+
+    private fun preserveRetryablePending(message: String) {
+        callbacks.entries.forEach { (id, pending) ->
+            if (pending.retryable) {
+                pending.needsResend = true
+            } else if (callbacks.remove(id, pending)) {
+                pending.callback(Result.failure(IllegalStateException(message)))
+            }
+        }
+    }
 }
+
+internal fun isRetryableBridgeMethod(method: String): Boolean = method in setOf(
+    "threads.list",
+    "thread.read",
+    "models.list",
+    "modes.list",
+    "permissions.list",
+    "directories.list",
+    "account.status",
+    "automations.list",
+)

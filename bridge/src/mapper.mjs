@@ -195,7 +195,13 @@ export function mapItem(item, turnId) {
       };
     case "agentMessage": {
       const text = item.text || "";
-      return { ...base, role: "assistant", text, attachments: attachmentsFromMarkdown(text, item.id) };
+      return {
+        ...base,
+        role: "assistant",
+        text,
+        phase: item.phase || null,
+        attachments: attachmentsFromMarkdown(text, item.id),
+      };
     }
     case "plan":
       return { ...base, role: "assistant", text: item.text || "", kind: "plan" };

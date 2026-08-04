@@ -283,12 +283,17 @@ private fun ThreadsScreen(state: UiState, viewModel: MainViewModel, snackbar: Sn
                     Column {
                         Text("Codex Pocket", fontWeight = FontWeight.Bold)
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(7.dp).clip(CircleShape).background(Color(0xFF36B37E)))
+                            val connectionColor = if (state.isReconnecting) {
+                                Color(0xFFE0A126)
+                            } else {
+                                Color(0xFF36B37E)
+                            }
+                            Box(Modifier.size(7.dp).clip(CircleShape).background(connectionColor))
                             Spacer(Modifier.width(6.dp))
                             Text(
-                                "Mac 已连接",
+                                if (state.isReconnecting) "网络波动，正在恢复" else "Mac 已连接",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF258B62),
+                                color = if (state.isReconnecting) Color(0xFFA56D08) else Color(0xFF258B62),
                             )
                         }
                     }
@@ -1265,29 +1270,48 @@ private fun ThreadCard(thread: ThreadSummary, onClick: () -> Unit) {
     }
 }
 
-private sealed interface ChatTimelineItem {
+internal sealed interface ChatTimelineItem {
     val key: String
 }
 
-private data class TimelineMessage(val message: ChatMessage) : ChatTimelineItem {
+internal data class TimelineMessage(val message: ChatMessage) : ChatTimelineItem {
     override val key: String = "message-${message.id}"
 }
 
-private data class TimelineProcess(val messages: List<ChatMessage>) : ChatTimelineItem {
-    override val key: String = "process-${messages.first().id}"
+internal data class TimelineProcess(val messages: List<ChatMessage>) : ChatTimelineItem {
     val turnId: String = messages.firstNotNullOfOrNull { it.turnId.takeIf(String::isNotBlank) }.orEmpty()
+    override val key: String = "process-${turnId.ifBlank { messages.first().id }}"
 }
 
-private fun isProcessMessage(message: ChatMessage): Boolean =
-    message.role == "tool" || message.role == "status" || message.kind == "plan"
+private fun isProcessMessage(
+    message: ChatMessage,
+    index: Int,
+    lastAssistantMessageByTurn: Map<String, Int>,
+): Boolean {
+    if (message.role == "tool" || message.role == "status" || message.kind == "plan") return true
+    if (message.role != "assistant" || message.kind != "agentMessage") return false
+    if (message.phase == "commentary") return true
+    if (message.turnId.isBlank()) return false
+    // Some providers and old phone caches do not preserve MessagePhase. In
+    // that case the newest assistant message in the turn is the visible one;
+    // earlier updates are still available inside the process disclosure.
+    return lastAssistantMessageByTurn[message.turnId] != index
+}
 
-private fun buildChatTimeline(messages: List<ChatMessage>): List<ChatTimelineItem> {
+internal fun buildChatTimeline(messages: List<ChatMessage>): List<ChatTimelineItem> {
     val timeline = mutableListOf<ChatTimelineItem>()
     val processIndexByTurn = mutableMapOf<String, Int>()
-    messages.forEach { message ->
-        if (!isProcessMessage(message)) {
+    val lastAssistantMessageByTurn = buildMap {
+        messages.forEachIndexed { index, message ->
+            if (message.role == "assistant" && message.kind == "agentMessage" && message.turnId.isNotBlank()) {
+                put(message.turnId, index)
+            }
+        }
+    }
+    messages.forEachIndexed { index, message ->
+        if (!isProcessMessage(message, index, lastAssistantMessageByTurn)) {
             timeline += TimelineMessage(message)
-            return@forEach
+            return@forEachIndexed
         }
         val groupId = message.turnId.ifBlank { "message-${message.id}" }
         val existingIndex = processIndexByTurn[groupId]
@@ -1308,7 +1332,7 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
     val thread = state.selectedThread ?: return
     val listState = rememberLazyListState()
     val scrollScope = rememberCoroutineScope()
-    val showsStatus = state.isSending || state.pendingApproval != null
+    val showsStatus = state.isSending || state.pendingApproval != null || state.isReconnecting
     val timeline = remember(state.messages) { buildChatTimeline(state.messages) }
     val liveProcessKey = remember(timeline, state.activeTurnId) {
         state.activeTurnId?.let { activeTurnId ->
@@ -1396,7 +1420,10 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.openThread(thread) }, enabled = !state.isSending) {
+                    IconButton(
+                        onClick = { viewModel.openThread(thread) },
+                        enabled = !state.isSending && !state.isReconnecting,
+                    ) {
                         Icon(Icons.Rounded.Refresh, "重新同步")
                     }
                     Box {
@@ -1535,6 +1562,12 @@ private fun ProcessGroupCard(
     val messages = group?.messages.orEmpty()
     val approval = state.pendingApproval.takeIf { isLive }
     val recentActivities = state.activities.takeLast(8).takeIf { isLive }.orEmpty()
+    val progressPreview = processProgressPreview(
+        messages = messages,
+        activities = recentActivities,
+        statusDetail = state.statusDetail,
+        isLive = isLive,
+    )
     var expanded by remember(group?.key ?: "live-process") { mutableStateOf(false) }
     LaunchedEffect(approval?.requestId) {
         if (approval != null) expanded = true
@@ -1549,7 +1582,7 @@ private fun ProcessGroupCard(
     ) {
         Column {
             Row(
-                Modifier.fillMaxWidth().heightIn(min = if (compact) 34.dp else 38.dp)
+                Modifier.fillMaxWidth().heightIn(min = if (compact) 38.dp else 44.dp)
                     .clickable { expanded = !expanded }
                     .padding(horizontal = 11.dp, vertical = if (compact) 5.dp else 7.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1569,18 +1602,28 @@ private fun ProcessGroupCard(
                     )
                 }
                 Spacer(Modifier.width(8.dp))
-                Text(
-                    if (isLive) state.currentStatus.ifBlank { "Codex 正在处理…" } else "过程",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (isLive) state.currentStatus.ifBlank { "Codex 正在处理…" } else "过程",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (progressPreview.isNotBlank()) {
+                        Text(
+                            progressPreview,
+                            fontSize = (fontSizeSp - 4f).coerceAtLeast(10f).sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
                 if (messages.isNotEmpty()) {
                     Text(
-                        "${messages.size} 项",
+                        "${messages.size} 条",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.outline,
                     )
@@ -1649,6 +1692,29 @@ private fun ProcessGroupCard(
             }
         }
     }
+}
+
+private fun processProgressPreview(
+    messages: List<ChatMessage>,
+    activities: List<ActivityEntry>,
+    statusDetail: String,
+    isLive: Boolean,
+): String {
+    val latestActivity = activities.lastOrNull()
+    val latestCommentary = messages.lastOrNull {
+        it.kind == "agentMessage" && it.text.isNotBlank()
+    }?.text
+    val latestProcess = messages.lastOrNull()?.let { it.command.orEmpty().ifBlank { it.text } }
+    val candidates = if (isLive) {
+        listOf(latestActivity?.detail, latestCommentary, statusDetail, latestActivity?.title, latestProcess)
+    } else {
+        listOf(latestCommentary, latestProcess)
+    }
+    return candidates.firstOrNull { !it.isNullOrBlank() }
+        .orEmpty()
+        .replace(Regex("\\s+"), " ")
+        .trim()
+        .take(180)
 }
 
 @Composable
@@ -1790,6 +1856,7 @@ private fun MessageBubble(
 }
 
 private fun internalMessageTitle(message: ChatMessage): String = when (message.kind) {
+    "agentMessage" -> "进度更新"
     "reasoning" -> "思考过程"
     "plan" -> "执行计划"
     "commandExecution" -> "命令执行"
@@ -2301,7 +2368,7 @@ private fun Composer(state: UiState, viewModel: MainViewModel) {
         ) {
             IconButton(
                 onClick = { imagePicker.launch("image/*") },
-                enabled = !state.isUploadingImages && state.pendingImages.size < 4,
+                enabled = !state.isReconnecting && !state.isUploadingImages && state.pendingImages.size < 4,
                 modifier = Modifier.size(50.dp),
             ) {
                 if (state.isUploadingImages) {
@@ -2317,6 +2384,7 @@ private fun Composer(state: UiState, viewModel: MainViewModel) {
                 placeholder = {
                     Text(
                         when {
+                            state.isReconnecting -> "连接恢复后即可继续发送…"
                             state.isUploadingImages -> "正在上传图片…"
                             state.isSending -> "输入引导，调整当前任务…"
                             else -> "给 Codex 发送指令…"
@@ -2332,6 +2400,7 @@ private fun Composer(state: UiState, viewModel: MainViewModel) {
             if (state.isSending && !state.isUploadingImages) {
                 FilledIconButton(
                     onClick = viewModel::interrupt,
+                    enabled = !state.isReconnecting,
                     modifier = Modifier.size(50.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = MaterialTheme.colorScheme.errorContainer,
@@ -2344,7 +2413,7 @@ private fun Composer(state: UiState, viewModel: MainViewModel) {
             }
             FilledIconButton(
                 onClick = viewModel::sendMessage,
-                enabled = !state.isUploadingImages &&
+                enabled = !state.isReconnecting && !state.isUploadingImages &&
                     (state.input.isNotBlank() || state.pendingImages.isNotEmpty()),
                 modifier = Modifier.size(50.dp),
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary),

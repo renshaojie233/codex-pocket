@@ -28,6 +28,14 @@ test("maps user and assistant messages", () => {
     mapItem({ id: "a1", type: "agentMessage", text: "收到" }, "turn-1").text,
     "收到",
   );
+  assert.equal(
+    mapItem({ id: "a2", type: "agentMessage", text: "处理中", phase: "commentary" }, "turn-1").phase,
+    "commentary",
+  );
+  assert.equal(
+    mapItem({ id: "a3", type: "agentMessage", text: "完成", phase: "final_answer" }, "turn-1").phase,
+    "final_answer",
+  );
 });
 
 test("maps image and video media for the mobile renderer", () => {

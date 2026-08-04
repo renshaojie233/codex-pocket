@@ -153,6 +153,7 @@ class MessageCacheStore(cacheRoot: File) {
             .put("role", message.role)
             .put("text", boundedText(message.text))
             .put("kind", message.kind)
+            .put("phase", message.phase)
             .put("command", message.command)
             .put("status", message.status)
             .put("attachments", attachments)
@@ -190,6 +191,7 @@ class MessageCacheStore(cacheRoot: File) {
             role = item.optString("role"),
             text = item.optString("text"),
             kind = item.optString("kind"),
+            phase = item.optString("phase").ifBlank { null },
             command = item.optString("command").ifBlank { null },
             status = item.optString("status").ifBlank { null },
             attachments = attachments,
