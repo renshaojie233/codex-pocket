@@ -26,6 +26,34 @@ class MessageWindowsTest {
         assertEquals(listOf("4", "5", "6"), merged.map { it.id })
     }
 
+    @Test
+    fun `discarded failed local message cannot return from an older cache window`() {
+        val failed = ChatMessage(
+            id = "failed-local",
+            turnId = "pending",
+            role = "user",
+            text = "not delivered",
+            kind = "userMessage",
+            deliveryState = "failed",
+        )
+        val authoritative = ChatMessage(
+            id = "failed-local",
+            turnId = "server-turn",
+            role = "user",
+            text = "delivered later",
+            kind = "userMessage",
+        )
+
+        assertEquals(
+            emptyList<ChatMessage>(),
+            excludeDiscardedLocalMessages(listOf(failed), setOf(failed.id)),
+        )
+        assertEquals(
+            listOf(authoritative),
+            excludeDiscardedLocalMessages(listOf(authoritative), setOf(failed.id)),
+        )
+    }
+
     private fun message(id: String, text: String) = ChatMessage(
         id = id,
         turnId = "turn-$id",

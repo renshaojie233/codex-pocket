@@ -63,17 +63,24 @@ class MessageCacheStore(cacheRoot: File) {
     }
 
     @Synchronized
-    fun write(threadId: String, messages: List<ChatMessage>): MessageCacheStats {
+    fun write(
+        threadId: String,
+        messages: List<ChatMessage>,
+        discardedLocalMessageIds: Set<String> = emptySet(),
+    ): MessageCacheStats {
         if (threadId.isBlank()) return stats()
         if (messages.isEmpty()) {
             remove(threadId)
             return stats()
         }
         directory.mkdirs()
-        val retainedMessages = mergeMessageWindows(
-            MAX_MESSAGES_PER_THREAD,
-            readMessages(threadId),
-            messages,
+        val retainedMessages = excludeDiscardedLocalMessages(
+            mergeMessageWindows(
+                MAX_MESSAGES_PER_THREAD,
+                readMessages(threadId),
+                messages,
+            ),
+            discardedLocalMessageIds,
         )
         val encoded = boundedMessages(retainedMessages)
         if (encoded.length() == 0) {

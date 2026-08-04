@@ -9,6 +9,7 @@ import androidx.core.content.edit
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.codexpocket.app.cache.MessageCacheStore
+import com.codexpocket.app.cache.excludeDiscardedLocalMessages
 import com.codexpocket.app.cache.mergeMessageWindows
 import com.codexpocket.app.cache.MessageCacheStats
 import com.codexpocket.app.media.PocketMediaLoader
@@ -57,7 +58,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         stats.copy(bytes = stats.bytes + PocketMediaLoader.sizeBytes(application))
     }
     private val cacheWriteJobs = ConcurrentHashMap<String, Job>()
+    private val discardedLocalMessageIds = preferences
+        .getStringSet(DISCARDED_LOCAL_MESSAGES_PREFERENCE, emptySet())
+        .orEmpty()
+        .toMutableSet()
     private var threadLoadGeneration = 0L
+    private var activeThreadSyncJob: Job? = null
+    private var activeThreadSyncThreadId: String? = null
+    private var activeThreadSyncInFlight = false
     private val _state = MutableStateFlow(
         UiState(
             endpoint = preferences.getString("endpoint", BuildConfig.BRIDGE_ENDPOINT)
@@ -650,10 +658,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             }
         }
         viewModelScope.launch {
-            val cached = if (preserveVisibleContent) {
+            val cached = (if (preserveVisibleContent) {
                 visibleMessages
             } else {
                 withContext(Dispatchers.IO) { messageCache.read(thread.id) }
+            }).let { messages ->
+                excludeDiscardedLocalMessages(messages, discardedLocalMessageIds)
             }
             if (generation != threadLoadGeneration || _state.value.selectedThread?.id != thread.id) {
                 return@launch
@@ -754,6 +764,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                             }
                             scheduleMessageCache(thread.id, mergedMessages)
                             prefetchMessageImages(mergedMessages)
+                            if (threadPayload?.optString("status") == "active") {
+                                startActiveThreadSync(thread.id)
+                            } else {
+                                stopActiveThreadSync(thread.id)
+                            }
                         },
                         onFailure = { fail(it.message ?: "无法读取任务内容") },
                     )
@@ -766,6 +781,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
 
     private fun closeThread(preserveCache: Boolean) {
         if (preserveCache) cacheCurrentMessages(delayMillis = 0)
+        stopActiveThreadSync()
         threadLoadGeneration += 1
         _state.update {
             it.copy(
@@ -1035,6 +1051,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 sizeBytes = null,
             )
         }
+        rememberDiscardedLocalMessage(messageId)
         _state.update { state ->
             state.copy(messages = state.messages.filterNot { it.id == messageId }, error = null)
         }
@@ -1048,12 +1065,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     }
 
     fun discardFailedMessage(messageId: String) {
+        val message = _state.value.messages.firstOrNull {
+            it.id == messageId && it.deliveryState == "failed"
+        } ?: return
+        rememberDiscardedLocalMessage(message.id)
         _state.update { state ->
             state.copy(messages = state.messages.filterNot {
                 it.id == messageId && it.deliveryState == "failed"
             })
         }
         cacheCurrentMessages()
+    }
+
+    private fun rememberDiscardedLocalMessage(messageId: String) {
+        discardedLocalMessageIds += messageId
+        while (discardedLocalMessageIds.size > MAX_DISCARDED_LOCAL_MESSAGES) {
+            discardedLocalMessageIds.remove(discardedLocalMessageIds.first())
+        }
+        preferences.edit {
+            putStringSet(
+                DISCARDED_LOCAL_MESSAGES_PREFERENCE,
+                discardedLocalMessageIds.toSet(),
+            )
+        }
     }
 
     fun loadAccountStatus() {
@@ -1268,11 +1302,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         delayMillis: Long = CACHE_WRITE_DELAY_MILLIS,
     ) {
         val snapshot = messages.toList()
+        val discardedSnapshot = discardedLocalMessageIds.toSet()
         cacheWriteJobs.remove(threadId)?.cancel()
         cacheWriteJobs[threadId] = viewModelScope.launch(Dispatchers.IO) {
             if (delayMillis > 0) delay(delayMillis)
             val stats = combinedCacheStats(
-                runCatching { messageCache.write(threadId, snapshot) }
+                runCatching {
+                    messageCache.write(threadId, snapshot, discardedSnapshot)
+                }
                     .getOrElse { messageCache.stats() },
             )
             _state.update {
@@ -1409,9 +1446,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                             ActivityEntry("turn-started", "Codex 已开始处理", phase = "completed"),
                     )
                 }
+                _state.value.selectedThread?.id?.let(::startActiveThreadSync)
             }
             "turn.completed" -> {
                 if (belongsToSelectedThread(data)) {
+                    stopActiveThreadSync(data.optString("threadId"))
                     _state.update {
                         it.copy(
                             isSending = false,
@@ -1480,6 +1519,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                             currentStatus = if (type == "active") "Codex 正在处理…" else it.currentStatus,
                         )
                     }
+                    val selectedThreadId = _state.value.selectedThread?.id
+                    if (type == "active" && selectedThreadId != null) {
+                        startActiveThreadSync(selectedThreadId)
+                    } else {
+                        stopActiveThreadSync(selectedThreadId)
+                    }
                 } else {
                     refreshThreads()
                 }
@@ -1511,6 +1556,78 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 _state.update { it.copy(isSending = false, currentStatus = "运行出错") }
             }
         }
+    }
+
+    private fun startActiveThreadSync(threadId: String) {
+        if (activeThreadSyncThreadId == threadId && activeThreadSyncJob?.isActive == true) return
+        stopActiveThreadSync()
+        activeThreadSyncThreadId = threadId
+        activeThreadSyncJob = viewModelScope.launch {
+            while (
+                _state.value.selectedThread?.id == threadId &&
+                _state.value.isSending
+            ) {
+                delay(ACTIVE_THREAD_SYNC_INTERVAL_MILLIS)
+                val current = _state.value
+                if (
+                    current.selectedThread?.id != threadId ||
+                    !current.isSending ||
+                    current.connection != ConnectionState.Connected ||
+                    activeThreadSyncInFlight
+                ) continue
+                activeThreadSyncInFlight = true
+                client.request(
+                    "thread.read",
+                    JSONObject()
+                        .put("threadId", threadId)
+                        .put("messageLimit", MessageCacheStore.LATEST_SYNC_MESSAGE_COUNT),
+                ) { result ->
+                    onMain {
+                        activeThreadSyncInFlight = false
+                        if (_state.value.selectedThread?.id != threadId) return@onMain
+                        result.onSuccess { payload -> applyActiveThreadSnapshot(threadId, payload) }
+                    }
+                }
+            }
+            if (activeThreadSyncThreadId == threadId) activeThreadSyncThreadId = null
+        }
+    }
+
+    private fun stopActiveThreadSync(threadId: String? = null) {
+        if (threadId != null && activeThreadSyncThreadId != threadId) return
+        activeThreadSyncJob?.cancel()
+        activeThreadSyncJob = null
+        activeThreadSyncThreadId = null
+        activeThreadSyncInFlight = false
+    }
+
+    private fun applyActiveThreadSnapshot(threadId: String, payload: JSONObject) {
+        val fresh = parseMessages(payload.optJSONArray("messages") ?: JSONArray())
+        val threadIsActive = payload.optJSONObject("thread")?.optString("status") == "active"
+        val activeTurnId = payload.optString("activeTurnId").takeIf(String::isNotBlank)
+        val previousMessages = _state.value.messages
+        val merged = mergeMessageWindows(
+            MessageCacheStore.MAX_MESSAGES_PER_THREAD,
+            previousMessages,
+            fresh,
+        )
+        _state.update { state ->
+            if (state.selectedThread?.id != threadId) state else state.copy(
+                messages = merged,
+                isSending = threadIsActive,
+                activeTurnId = activeTurnId,
+                currentStatus = if (threadIsActive) {
+                    state.currentStatus.ifBlank { "Codex 正在处理…" }
+                } else {
+                    state.currentStatus
+                },
+            )
+        }
+        if (merged != previousMessages) {
+            scheduleMessageCache(threadId, merged)
+            prefetchMessageImages(fresh)
+        }
+        if (!threadIsActive) stopActiveThreadSync(threadId)
     }
 
     override fun onError(message: String) = onMain { fail(message) }
@@ -1806,10 +1923,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     }
 
     override fun onCleared() {
+        stopActiveThreadSync()
         cacheWriteJobs.values.forEach { it.cancel() }
         val current = _state.value
         current.selectedThread?.id?.let { threadId ->
-            if (current.messages.isNotEmpty()) runCatching { messageCache.write(threadId, current.messages) }
+            if (current.messages.isNotEmpty()) {
+                runCatching {
+                    messageCache.write(threadId, current.messages, discardedLocalMessageIds)
+                }
+            }
         }
         client.close()
         super.onCleared()
@@ -1817,6 +1939,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
 
     companion object {
         private const val CACHE_WRITE_DELAY_MILLIS = 650L
+        private const val ACTIVE_THREAD_SYNC_INTERVAL_MILLIS = 8_000L
+        private const val DISCARDED_LOCAL_MESSAGES_PREFERENCE = "discarded-local-message-ids"
+        private const val MAX_DISCARDED_LOCAL_MESSAGES = 500
         private const val MAX_IMAGES_PER_MESSAGE = 4
         private const val MAX_IMAGE_BYTES = 15L * 1024L * 1024L
     }

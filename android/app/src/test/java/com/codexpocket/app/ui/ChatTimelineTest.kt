@@ -72,6 +72,24 @@ class ChatTimelineTest {
         assertEquals("最新进度", preview)
     }
 
+    @Test
+    fun `active process follows steering and failed messages at the end of the timeline`() {
+        val timeline = buildChatTimeline(
+            listOf(
+                message("user", role = "user", kind = "userMessage"),
+                message("progress", phase = "commentary"),
+                message("steer", role = "user", kind = "userMessage"),
+            ),
+        )
+
+        val ordered = moveActiveProcessToEnd(timeline, "turn-1")
+
+        assertTrue(ordered.last() is TimelineProcess)
+        assertEquals(listOf("user", "steer"), ordered.dropLast(1).map {
+            (it as TimelineMessage).message.id
+        })
+    }
+
     private fun message(
         id: String,
         role: String = "assistant",

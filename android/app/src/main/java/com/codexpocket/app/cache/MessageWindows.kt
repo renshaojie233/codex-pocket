@@ -22,6 +22,15 @@ internal fun mergeMessageWindows(
     return merged.values.toList().takeLast(limit)
 }
 
+internal fun excludeDiscardedLocalMessages(
+    messages: List<ChatMessage>,
+    discardedMessageIds: Set<String>,
+): List<ChatMessage> = messages.filterNot { message ->
+    message.id in discardedMessageIds &&
+        message.role == "user" &&
+        (message.deliveryState != null || message.turnId == "pending")
+}
+
 private fun ChatMessage.cacheIdentity(): String = id.ifBlank {
     "$turnId\u0000$role\u0000$kind\u0000${text.hashCode()}"
 }

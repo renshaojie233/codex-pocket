@@ -12,6 +12,11 @@ import android.widget.VideoView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -1326,6 +1331,17 @@ internal fun buildChatTimeline(messages: List<ChatMessage>): List<ChatTimelineIt
     return timeline
 }
 
+internal fun moveActiveProcessToEnd(
+    timeline: List<ChatTimelineItem>,
+    activeTurnId: String?,
+): List<ChatTimelineItem> {
+    if (activeTurnId.isNullOrBlank()) return timeline
+    val activeProcess = timeline.filterIsInstance<TimelineProcess>()
+        .lastOrNull { it.turnId == activeTurnId } ?: return timeline
+    if (timeline.lastOrNull()?.key == activeProcess.key) return timeline
+    return timeline.filterNot { it.key == activeProcess.key } + activeProcess
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: SnackbarHostState) {
@@ -1333,7 +1349,9 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
     val listState = rememberLazyListState()
     val scrollScope = rememberCoroutineScope()
     val showsStatus = state.isSending || state.pendingApproval != null || state.isReconnecting
-    val timeline = remember(state.messages) { buildChatTimeline(state.messages) }
+    val timeline = remember(state.messages, state.activeTurnId) {
+        moveActiveProcessToEnd(buildChatTimeline(state.messages), state.activeTurnId)
+    }
     val liveProcessKey = remember(timeline, state.activeTurnId) {
         state.activeTurnId?.let { activeTurnId ->
             timeline.filterIsInstance<TimelineProcess>().lastOrNull { it.turnId == activeTurnId }?.key
@@ -1570,6 +1588,20 @@ private fun ProcessGroupCard(
         statusDetail = state.statusDetail,
         isLive = isLive,
     )
+    val liveTextAlpha = if (isLive) {
+        val transition = rememberInfiniteTransition(label = "live-progress-pulse")
+        transition.animateFloat(
+            initialValue = 0.46f,
+            targetValue = 0.82f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 950),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "live-progress-alpha",
+        ).value
+    } else {
+        0.58f
+    }
     var expanded by remember(group?.key ?: "live-process") { mutableStateOf(isLive) }
     LaunchedEffect(approval?.requestId) {
         if (approval != null) expanded = true
@@ -1620,7 +1652,7 @@ private fun ProcessGroupCard(
                         Text(
                             progressPreview,
                             fontSize = (fontSizeSp - 4f).coerceAtLeast(10f).sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = liveTextAlpha),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
