@@ -18,7 +18,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class TaskNotificationService : Service(), BridgeClient.Listener {
-    private val client = BridgeClient(this)
+    private val client by lazy { BridgeClient(this, this) }
     private val threadTitles = ConcurrentHashMap<String, String>()
     private val seenCompletions = LinkedHashSet<String>()
 
@@ -47,7 +47,7 @@ class TaskNotificationService : Service(), BridgeClient.Listener {
     }
 
     override fun onDestroy() {
-        client.disconnect()
+        client.close()
         super.onDestroy()
     }
 

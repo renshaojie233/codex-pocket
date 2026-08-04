@@ -1,7 +1,13 @@
 package com.codexpocket.app.network
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -12,7 +18,7 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
 
-class BridgeClient(private val listener: Listener) {
+class BridgeClient(context: Context, private val listener: Listener) {
     interface Listener {
         fun onConnected()
         fun onDisconnected(reason: String?)
@@ -39,21 +45,52 @@ class BridgeClient(private val listener: Listener) {
 
     private val callbacks = ConcurrentHashMap<String, PendingRequest>()
     private val reconnectHandler = Handler(Looper.getMainLooper())
+    private val connectivityManager = context.applicationContext
+        .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    private val underlyingNetworks = linkedMapOf<Network, String>()
+    private var networkMonitorRegistered = false
+    private var networkSnapshot = ""
+    private var networkSnapshotReady = false
+    private var lastNetworkRestartAt = 0L
+    private var networkReconnectRunnable: Runnable? = null
     private var reconnectRunnable: Runnable? = null
+    private var helloTimeoutRunnable: Runnable? = null
+    @Volatile
     private var socket: WebSocket? = null
     private var endpoint: String = ""
     private var token: String = ""
     private var reconnectAttempt = 0
+    @Volatile
     private var generation = 0
+    @Volatile
     private var shouldReconnect = false
 
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            updateUnderlyingNetwork(network, connectivityManager.getNetworkCapabilities(network))
+        }
+
+        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+            updateUnderlyingNetwork(network, capabilities)
+        }
+
+        override fun onLost(network: Network) {
+            reconnectHandler.post {
+                underlyingNetworks.remove(network)
+                handleNetworkSnapshotChanged()
+            }
+        }
+    }
+
     fun connect(endpoint: String, token: String) {
+        ensureNetworkMonitor()
         shouldReconnect = true
         this.endpoint = endpoint
         this.token = token
         reconnectAttempt = 0
         generation += 1
         cancelReconnect()
+        cancelHelloTimeout()
         socket?.cancel()
         openSocket(generation)
     }
@@ -62,9 +99,20 @@ class BridgeClient(private val listener: Listener) {
         shouldReconnect = false
         generation += 1
         cancelReconnect()
+        cancelHelloTimeout()
         socket?.close(1000, "Client disconnect")
         socket = null
         failPending("连接已断开")
+    }
+
+    fun close() {
+        disconnect()
+        cancelNetworkReconnect()
+        if (networkMonitorRegistered) {
+            runCatching { connectivityManager.unregisterNetworkCallback(networkCallback) }
+            networkMonitorRegistered = false
+        }
+        httpClient.connectionPool.evictAll()
     }
 
     fun request(
@@ -100,6 +148,16 @@ class BridgeClient(private val listener: Listener) {
             .url(endpoint)
             .header("Authorization", "Bearer $token")
             .build()
+        cancelHelloTimeout()
+        helloTimeoutRunnable = Runnable {
+            if (!shouldReconnect || connectionGeneration != generation) return@Runnable
+            generation += 1
+            val staleSocket = socket
+            socket = null
+            staleSocket?.cancel()
+            preserveRetryablePending("连接握手超时")
+            scheduleReconnect("连接握手超时")
+        }.also { reconnectHandler.postDelayed(it, HELLO_TIMEOUT_MILLIS) }
         socket = httpClient.newWebSocket(request, SocketListener(connectionGeneration))
     }
 
@@ -121,6 +179,77 @@ class BridgeClient(private val listener: Listener) {
         reconnectRunnable = null
     }
 
+    private fun cancelHelloTimeout() {
+        helloTimeoutRunnable?.let(reconnectHandler::removeCallbacks)
+        helloTimeoutRunnable = null
+    }
+
+    private fun ensureNetworkMonitor() {
+        if (networkMonitorRegistered) return
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        runCatching { connectivityManager.registerNetworkCallback(request, networkCallback) }
+            .onSuccess { networkMonitorRegistered = true }
+    }
+
+    private fun updateUnderlyingNetwork(network: Network, capabilities: NetworkCapabilities?) {
+        reconnectHandler.post {
+            if (capabilities == null) {
+                underlyingNetworks.remove(network)
+            } else {
+                underlyingNetworks[network] = networkCapabilitySignature(capabilities)
+            }
+            handleNetworkSnapshotChanged()
+        }
+    }
+
+    private fun handleNetworkSnapshotChanged() {
+        val nextSnapshot = underlyingNetworks.entries
+            .sortedBy { it.key.toString() }
+            .joinToString("|") { (network, capabilities) -> "$network:$capabilities" }
+        if (!networkSnapshotReady) {
+            networkSnapshot = nextSnapshot
+            networkSnapshotReady = true
+            return
+        }
+        if (!shouldRestartForNetworkChange(networkSnapshot, nextSnapshot, shouldReconnect)) return
+        networkSnapshot = nextSnapshot
+        cancelNetworkReconnect()
+        networkReconnectRunnable = Runnable { restartAfterNetworkHandover() }
+            .also { reconnectHandler.postDelayed(it, NETWORK_HANDOVER_DEBOUNCE_MILLIS) }
+    }
+
+    private fun restartAfterNetworkHandover() {
+        networkReconnectRunnable = null
+        if (!shouldReconnect || endpoint.isBlank()) return
+        val now = SystemClock.elapsedRealtime()
+        val remaining = NETWORK_RESTART_MIN_INTERVAL_MILLIS - (now - lastNetworkRestartAt)
+        if (remaining > 0) {
+            networkReconnectRunnable = Runnable { restartAfterNetworkHandover() }
+                .also { reconnectHandler.postDelayed(it, remaining) }
+            return
+        }
+        lastNetworkRestartAt = now
+        generation += 1
+        cancelReconnect()
+        cancelHelloTimeout()
+        socket?.cancel()
+        socket = null
+        httpClient.connectionPool.evictAll()
+        preserveRetryablePending("网络已切换")
+        reconnectAttempt = 0
+        listener.onDisconnected("网络已切换")
+        listener.onReconnecting(0)
+        openSocket(generation)
+    }
+
+    private fun cancelNetworkReconnect() {
+        networkReconnectRunnable?.let(reconnectHandler::removeCallbacks)
+        networkReconnectRunnable = null
+    }
+
     private inner class SocketListener(private val connectionGeneration: Int) : WebSocketListener() {
         private var terminalHandled = false
 
@@ -132,6 +261,7 @@ class BridgeClient(private val listener: Listener) {
                 val message = JSONObject(text)
                 when (message.optString("type")) {
                     "hello" -> {
+                        cancelHelloTimeout()
                         reconnectAttempt = 0
                         cancelReconnect()
                         resendPending(webSocket)
@@ -163,6 +293,7 @@ class BridgeClient(private val listener: Listener) {
         private fun handleTerminal(webSocket: WebSocket, reason: String?) {
             if (terminalHandled || connectionGeneration != generation) return
             terminalHandled = true
+            cancelHelloTimeout()
             if (socket === webSocket) socket = null
             preserveRetryablePending(reason ?: "连接中断")
             scheduleReconnect(reason)
@@ -175,6 +306,14 @@ class BridgeClient(private val listener: Listener) {
                 pending.needsResend = false
             }
         }
+    }
+
+    private fun networkCapabilitySignature(capabilities: NetworkCapabilities): String = buildString {
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) append("wifi")
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) append("cellular")
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) append("ethernet")
+        append(':')
+        append(capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))
     }
 
     private fun handleResponse(message: JSONObject) {
@@ -206,6 +345,12 @@ class BridgeClient(private val listener: Listener) {
     }
 }
 
+internal fun shouldRestartForNetworkChange(
+    previousSnapshot: String,
+    nextSnapshot: String,
+    shouldReconnect: Boolean,
+): Boolean = shouldReconnect && previousSnapshot != nextSnapshot
+
 internal fun isRetryableBridgeMethod(method: String): Boolean = method in setOf(
     "threads.list",
     "thread.read",
@@ -216,3 +361,7 @@ internal fun isRetryableBridgeMethod(method: String): Boolean = method in setOf(
     "account.status",
     "automations.list",
 )
+
+private const val NETWORK_HANDOVER_DEBOUNCE_MILLIS = 600L
+private const val NETWORK_RESTART_MIN_INTERVAL_MILLIS = 2_000L
+private const val HELLO_TIMEOUT_MILLIS = 12_000L

@@ -66,7 +66,7 @@ export class CodexClient extends EventEmitter {
       clientInfo: {
         name: "codex_pocket_bridge",
         title: "Codex Pocket Bridge",
-        version: "0.15.1",
+        version: "0.15.2",
       },
       capabilities: {
         experimentalApi: true,

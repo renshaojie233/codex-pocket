@@ -50,7 +50,7 @@ import org.json.JSONObject
 
 class MainViewModel(application: Application) : AndroidViewModel(application), BridgeClient.Listener {
     private val preferences = application.getSharedPreferences("codex-pocket", 0)
-    private val client = BridgeClient(this)
+    private val client = BridgeClient(application, this)
     private val imageUploader = ImageUploader(application.contentResolver)
     private val messageCache = MessageCacheStore(application.cacheDir)
     private val initialCacheStats = messageCache.stats().let { stats ->
@@ -1725,7 +1725,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         current.selectedThread?.id?.let { threadId ->
             if (current.messages.isNotEmpty()) runCatching { messageCache.write(threadId, current.messages) }
         }
-        client.disconnect()
+        client.close()
         super.onCleared()
     }
 

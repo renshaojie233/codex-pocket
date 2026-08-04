@@ -18,4 +18,11 @@ class BridgeClientPolicyTest {
         assertFalse(isRetryableBridgeMethod("turn.steer"))
         assertFalse(isRetryableBridgeMethod("thread.archive"))
     }
+
+    @Test
+    fun `restarts an active connection when the underlying network changes`() {
+        assertTrue(shouldRestartForNetworkChange("wifi:true", "cellular:true", true))
+        assertFalse(shouldRestartForNetworkChange("wifi:true", "wifi:true", true))
+        assertFalse(shouldRestartForNetworkChange("wifi:true", "cellular:true", false))
+    }
 }

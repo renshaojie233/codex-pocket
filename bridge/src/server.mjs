@@ -16,7 +16,7 @@ import { mapModel, mapNotification, mapThreadDetail, mapThreadSummary } from "./
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.15.1";
+const VERSION = "0.15.2";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const codex = new CodexClient({ codexBin: config.codexBin });
 const loadedThreads = new Map();
@@ -841,6 +841,7 @@ async function handleRequest(message) {
 }
 
 wss.on("connection", (ws) => {
+  ws.isAlive = true;
   sockets.add(ws);
   send(ws, {
     type: "hello",
@@ -873,7 +874,23 @@ wss.on("connection", (ws) => {
   });
   ws.on("close", () => sockets.delete(ws));
   ws.on("error", () => sockets.delete(ws));
+  ws.on("pong", () => {
+    ws.isAlive = true;
+  });
 });
+
+const socketHeartbeat = setInterval(() => {
+  for (const ws of sockets) {
+    if (!ws.isAlive) {
+      sockets.delete(ws);
+      ws.terminate();
+      continue;
+    }
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, 30_000);
+socketHeartbeat.unref();
 
 codex.on("notification", (message) => {
   if (message.method === "thread/settings/updated") {
@@ -923,6 +940,7 @@ server.listen(config.port, config.host, () => {
 });
 
 function shutdown() {
+  clearInterval(socketHeartbeat);
   for (const ws of sockets) ws.close(1001, "Bridge shutting down");
   server.close();
   codex.stop();
