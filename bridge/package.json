@@ -1,0 +1,23 @@
+{
+  "name": "codex-pocket-bridge",
+  "version": "0.12.0",
+  "private": true,
+  "type": "module",
+  "description": "A small, authenticated bridge between Codex App Server and the Codex Pocket Android client.",
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "check:account": "node scripts/check-account.mjs",
+    "check:create": "node scripts/check-create.mjs",
+    "check:media": "node scripts/check-media.mjs",
+    "check:modes": "node scripts/check-modes.mjs",
+    "check:steer": "node scripts/check-steer.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}

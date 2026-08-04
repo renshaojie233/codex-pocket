@@ -1,0 +1,2689 @@
+package com.codexpocket.app.ui
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.net.Uri
+import android.text.method.LinkMovementMethod
+import android.widget.MediaController
+import android.widget.TextView
+import android.widget.Toast
+import android.widget.VideoView
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Archive
+import androidx.compose.material.icons.rounded.ArrowDownward
+import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.Audiotrack
+import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Flag
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Security
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material.icons.rounded.Wifi
+import androidx.compose.material.icons.rounded.WifiOff
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.ContextCompat
+import coil.ImageLoader
+import coil.compose.AsyncImage
+import coil.decode.VideoFrameDecoder
+import coil.request.ImageRequest
+import coil.request.videoFrameMillis
+import com.codexpocket.app.MainViewModel
+import com.codexpocket.app.media.MediaSaver
+import com.codexpocket.app.model.ActivityEntry
+import com.codexpocket.app.model.ChatMessage
+import com.codexpocket.app.model.ConnectionState
+import com.codexpocket.app.model.MediaAttachment
+import com.codexpocket.app.model.ThreadSummary
+import com.codexpocket.app.model.UiState
+import io.noties.markwon.Markwon
+import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
+import io.noties.markwon.ext.tables.TablePlugin
+import io.noties.markwon.ext.tasklist.TaskListPlugin
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlinx.coroutines.launch
+
+@Composable
+fun CodexPocketApp(viewModel: MainViewModel) {
+    val state by viewModel.state.collectAsState()
+    val snackbar = remember { SnackbarHostState() }
+
+    LaunchedEffect(state.error) {
+        state.error?.let {
+            snackbar.showSnackbar(it)
+            viewModel.clearError()
+        }
+    }
+
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        AnimatedContent(
+            targetState = when {
+                state.connection != ConnectionState.Connected -> "connect"
+                state.selectedThread != null -> "chat"
+                else -> "threads"
+            },
+            label = "screen",
+        ) { screen ->
+            when (screen) {
+                "connect" -> ConnectionScreen(state, viewModel)
+                "chat" -> ChatScreen(state, viewModel, snackbar)
+                else -> ThreadsScreen(state, viewModel, snackbar)
+            }
+        }
+        SnackbarHost(
+            hostState = snackbar,
+            modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(12.dp),
+        )
+    }
+}
+
+@Composable
+private fun ConnectionScreen(state: UiState, viewModel: MainViewModel) {
+    Column(
+        modifier = Modifier.fillMaxSize().statusBarsPadding().padding(horizontal = 24.dp),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Box(
+            modifier = Modifier.size(68.dp).clip(RoundedCornerShape(20.dp))
+                .background(MaterialTheme.colorScheme.primary),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Rounded.Code, null, tint = Color.White, modifier = Modifier.size(36.dp))
+        }
+        Spacer(Modifier.height(24.dp))
+        Text("Codex Pocket", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+        Text(
+            "把这台手机变成你的 Codex 遥控器",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 6.dp, bottom = 30.dp),
+        )
+        OutlinedTextField(
+            value = state.endpoint,
+            onValueChange = viewModel::setEndpoint,
+            label = { Text("Mac Bridge 地址") },
+            placeholder = { Text("ws://100.x.x.x:8787/ws") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+        )
+        Spacer(Modifier.height(14.dp))
+        OutlinedTextField(
+            value = state.token,
+            onValueChange = viewModel::setToken,
+            label = { Text("配对令牌") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { viewModel.connect() }),
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+        )
+        Spacer(Modifier.height(20.dp))
+        Button(
+            onClick = viewModel::connect,
+            enabled = state.connection != ConnectionState.Connecting,
+            modifier = Modifier.fillMaxWidth().height(54.dp),
+            shape = RoundedCornerShape(16.dp),
+        ) {
+            if (state.connection == ConnectionState.Connecting) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                )
+                Spacer(Modifier.width(10.dp))
+                Text("正在连接…")
+            } else {
+                Icon(Icons.Rounded.Wifi, null)
+                Spacer(Modifier.width(8.dp))
+                Text("连接 Mac")
+            }
+        }
+        Text(
+            "请先确认手机上的 Tailscale 已连接。普通网络流量不会经过 Mac。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 16.dp),
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ThreadsScreen(state: UiState, viewModel: MainViewModel, snackbar: SnackbarHostState) {
+    var showNewThread by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text("Codex Pocket", fontWeight = FontWeight.Bold)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(7.dp).clip(CircleShape).background(Color(0xFF36B37E)))
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                "Mac 已连接",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF258B62),
+                            )
+                        }
+                    }
+                },
+                actions = {
+                    IconButton(onClick = {
+                        showSettings = true
+                        viewModel.loadAccountStatus()
+                        viewModel.loadAutomations()
+                        viewModel.loadPermissionProfiles()
+                    }) {
+                        Icon(Icons.Rounded.Settings, "设置与用量")
+                    }
+                    IconButton(onClick = viewModel::refreshThreads) {
+                        Icon(Icons.Rounded.Refresh, "刷新")
+                    }
+                    IconButton(onClick = viewModel::disconnect) {
+                        Icon(Icons.Rounded.WifiOff, "断开")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                modifier = Modifier.statusBarsPadding(),
+            )
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = { showNewThread = true },
+                icon = { Icon(Icons.Rounded.Add, null) },
+                text = { Text("新任务") },
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbar) },
+    ) { padding ->
+        if (state.isLoading && state.threads.isEmpty()) {
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                item {
+                    Text(
+                        "最近任务",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+                    )
+                }
+                items(state.threads, key = { it.id }) { thread ->
+                    ThreadCard(thread, onClick = { viewModel.openThread(thread) })
+                }
+                if (state.threads.isEmpty()) {
+                    item {
+                        Text(
+                            "还没有找到 Codex 任务",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth().padding(32.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+    if (showNewThread) {
+        NewThreadSheet(
+            state = state,
+            viewModel = viewModel,
+            onDismiss = {
+                showNewThread = false
+                viewModel.closeDirectoryBrowser()
+            },
+        )
+    }
+    if (showSettings) {
+        SettingsSheet(state = state, viewModel = viewModel, onDismiss = { showSettings = false })
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NewThreadSheet(state: UiState, viewModel: MainViewModel, onDismiss: () -> Unit) {
+    val recentDirectories = remember(state.threads) {
+        state.threads.map { it.cwd }.filter { it.isNotBlank() }.distinct().take(8)
+    }
+    var cwd by remember(recentDirectories) {
+        mutableStateOf(recentDirectories.firstOrNull() ?: "/Users")
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(
+            Modifier.fillMaxWidth().navigationBarsPadding().imePadding()
+                .padding(start = 20.dp, end = 20.dp, bottom = 20.dp),
+        ) {
+            Text("新建 Codex 任务", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(
+                "选择 Mac 上的项目目录。任务会同时出现在手机和桌面端。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 5.dp, bottom = 18.dp),
+            )
+
+            OutlinedTextField(
+                value = cwd,
+                onValueChange = { cwd = it },
+                label = { Text("项目目录") },
+                placeholder = { Text("/Users/你的名字/项目") },
+                singleLine = true,
+                trailingIcon = {
+                    IconButton(onClick = { viewModel.openDirectoryBrowser(cwd) }) {
+                        Icon(Icons.Rounded.Folder, "浏览 Mac 文件夹")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+            )
+
+            if (recentDirectories.isNotEmpty()) {
+                Text(
+                    "最近项目",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 15.dp, bottom = 6.dp),
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(recentDirectories, key = { it }) { directory ->
+                        AssistChip(
+                            onClick = { cwd = directory },
+                            label = {
+                                Text(
+                                    directory.substringAfterLast('/').ifBlank { directory },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                            leadingIcon = { Icon(Icons.Rounded.Folder, null, modifier = Modifier.size(17.dp)) },
+                        )
+                    }
+                }
+            }
+
+            Text(
+                "模型与思考强度",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 14.dp),
+            )
+            ModelControls(state, viewModel)
+
+            Button(
+                onClick = { viewModel.createThread(cwd) },
+                enabled = cwd.startsWith("/") && !state.isCreatingThread,
+                modifier = Modifier.fillMaxWidth().height(54.dp).padding(top = 6.dp),
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                if (state.isCreatingThread) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(19.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                    )
+                    Spacer(Modifier.width(9.dp))
+                    Text("正在创建…")
+                } else {
+                    Icon(Icons.Rounded.Add, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("创建并打开")
+                }
+            }
+        }
+    }
+
+    if (state.isDirectoryBrowserOpen) {
+        DirectoryBrowserDialog(
+            state = state,
+            onOpen = viewModel::browseDirectory,
+            onChoose = {
+                cwd = it
+                viewModel.closeDirectoryBrowser()
+            },
+            onDismiss = viewModel::closeDirectoryBrowser,
+        )
+    }
+}
+
+@Composable
+private fun DirectoryBrowserDialog(
+    state: UiState,
+    onOpen: (String) -> Unit,
+    onChoose: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(22.dp),
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("选择 Mac 文件夹", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    state.directoryBrowserPath,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 5.dp, bottom = 10.dp),
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = {
+                            val current = state.directoryBrowserPath
+                            val parent = current.substringBeforeLast('/', "").ifBlank { "/" }
+                            onOpen(parent)
+                        },
+                        enabled = state.directoryBrowserPath != "/" && !state.isDirectoryLoading,
+                    ) {
+                        Icon(Icons.Rounded.ArrowUpward, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("上一级")
+                    }
+                    Spacer(Modifier.weight(1f))
+                    if (state.isDirectoryLoading) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                }
+                HorizontalDivider(Modifier.padding(vertical = 10.dp))
+                LazyColumn(Modifier.fillMaxWidth().heightIn(min = 220.dp, max = 430.dp)) {
+                    items(state.directoryEntries, key = { it.path }) { directory ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { onOpen(directory.path) }
+                                .padding(horizontal = 6.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Rounded.Folder, null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(11.dp))
+                            Text(
+                                directory.name,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Icon(
+                                Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                                null,
+                                tint = MaterialTheme.colorScheme.outline,
+                            )
+                        }
+                    }
+                    if (!state.isDirectoryLoading && state.directoryEntries.isEmpty()) {
+                        item {
+                            Text(
+                                "这个文件夹里没有子文件夹",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 28.dp),
+                            )
+                        }
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 10.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(onClick = onDismiss) { Text("取消") }
+                    Spacer(Modifier.width(6.dp))
+                    Button(
+                        onClick = { onChoose(state.directoryBrowserPath) },
+                        enabled = state.directoryBrowserPath.isNotBlank() && !state.isDirectoryLoading,
+                    ) { Text("选择当前文件夹") }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SettingsSheet(state: UiState, viewModel: MainViewModel, onDismiss: () -> Unit) {
+    val account = state.accountStatus
+    val context = LocalContext.current
+    val permissionProfiles = remember(state.permissionProfiles) {
+        val order = listOf(":danger-full-access", ":workspace", ":read-only")
+        state.permissionProfiles.sortedBy { profile ->
+            order.indexOf(profile.id).takeIf { it >= 0 } ?: Int.MAX_VALUE
+        }
+    }
+    val notificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            viewModel.setCompletionNotificationsEnabled(true)
+        } else {
+            viewModel.setCompletionNotificationsEnabled(false)
+            viewModel.reportNotificationPermissionDenied()
+        }
+    }
+    val setNotificationEnabled: (Boolean) -> Unit = { enabled ->
+        if (!enabled) {
+            viewModel.setCompletionNotificationsEnabled(false)
+        } else if (
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            viewModel.setCompletionNotificationsEnabled(true)
+        } else {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        LazyColumn(
+            Modifier.fillMaxWidth().heightIn(max = 720.dp).navigationBarsPadding(),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("设置与用量", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                        Text(
+                            "数据来自这台 Mac 当前登录的 Codex 账户",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            viewModel.loadAccountStatus()
+                            viewModel.loadAutomations()
+                            viewModel.loadPermissionProfiles()
+                        },
+                        enabled = !state.isAccountLoading && !state.isAutomationsLoading &&
+                            !state.isPermissionsLoading,
+                    ) {
+                        Icon(Icons.Rounded.Refresh, "刷新用量")
+                    }
+                }
+            }
+
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Rounded.Security,
+                                null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp),
+                            )
+                            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                                Text("默认运行权限", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "新任务和手机接下来发送的回合都会使用此设置",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (state.isPermissionsLoading) {
+                                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                            }
+                        }
+                        if (permissionProfiles.isEmpty() && !state.isPermissionsLoading) {
+                            Text(
+                                "暂时无法读取这台 Mac 的权限档位",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 14.dp),
+                            )
+                        } else {
+                            Column(Modifier.padding(top = 9.dp)) {
+                                permissionProfiles.forEachIndexed { index, profile ->
+                                    if (index > 0) HorizontalDivider()
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .clickable(enabled = profile.allowed) {
+                                                viewModel.selectDefaultPermissionProfile(profile.id)
+                                            }
+                                            .padding(vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        RadioButton(
+                                            selected = state.defaultPermissionProfile == profile.id,
+                                            enabled = profile.allowed,
+                                            onClick = { viewModel.selectDefaultPermissionProfile(profile.id) },
+                                        )
+                                        Column(Modifier.weight(1f).padding(start = 4.dp)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text(
+                                                    permissionProfileLabel(profile.id),
+                                                    fontWeight = FontWeight.Medium,
+                                                )
+                                                if (!profile.allowed) {
+                                                    Text(
+                                                        "  已禁用",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.error,
+                                                    )
+                                                }
+                                            }
+                                            Text(
+                                                profile.description ?: permissionProfileDescription(profile.id),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Rounded.NotificationsActive,
+                                null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp),
+                            )
+                            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                                Text("任务完成提醒", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    if (state.completionNotificationsEnabled) "后台监听已开启"
+                                    else "横幅、提示音和震动均已关闭",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = state.completionNotificationsEnabled,
+                                onCheckedChange = setNotificationEnabled,
+                            )
+                        }
+                        if (state.completionNotificationsEnabled) {
+                            Text(
+                                "会保留一条低调的后台监听通知。若小米仍收不到，请允许自启动，并把电池策略设为“无限制”。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 12.dp),
+                            )
+                            Row(
+                                Modifier.fillMaxWidth().padding(top = 12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                OutlinedButton(
+                                    onClick = viewModel::sendTestNotification,
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text("测试提醒")
+                                }
+                                TextButton(
+                                    onClick = viewModel::openNotificationSettings,
+                                    modifier = Modifier.weight(1f),
+                                ) {
+                                    Text("系统提醒设置")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("对话显示", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            Text(
+                                "${state.messageFontSizeSp.toInt()} sp",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        Slider(
+                            value = state.messageFontSizeSp,
+                            onValueChange = viewModel::setMessageFontSize,
+                            valueRange = 12f..20f,
+                            steps = 7,
+                            modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
+                        )
+                        Row(Modifier.fillMaxWidth()) {
+                            Text("小", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                            Spacer(Modifier.weight(1f))
+                            Text("标准", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                            Spacer(Modifier.weight(1f))
+                            Text("大", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                        }
+                        Text(
+                            "这是消息正文的显示效果，调整后立即生效。",
+                            fontSize = state.messageFontSizeSp.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 12.dp),
+                        )
+                        HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("紧凑对话", fontWeight = FontWeight.Medium)
+                                Text(
+                                    "减少消息间距与空白，一屏显示更多内容",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = state.compactChatEnabled,
+                                onCheckedChange = viewModel::setCompactChatEnabled,
+                            )
+                        }
+                    }
+                }
+            }
+
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("自动化与监控", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "${state.automations.count { it.status == "ACTIVE" }} 个运行 · ${state.automations.count { it.status != "ACTIVE" }} 个暂停",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (state.isAutomationsLoading) {
+                        CircularProgressIndicator(Modifier.size(21.dp), strokeWidth = 2.dp)
+                    } else {
+                        IconButton(onClick = viewModel::loadAutomations) {
+                            Icon(Icons.Rounded.Refresh, "刷新自动化")
+                        }
+                    }
+                }
+            }
+
+            items(state.automations, key = { "automation-${it.id}" }) { automation ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(15.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Rounded.Flag,
+                                null,
+                                tint = if (automation.status == "ACTIVE") MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.outline,
+                                modifier = Modifier.size(21.dp),
+                            )
+                            Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                                Text(
+                                    automation.name,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    automationScheduleLabel(automation.rrule),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Switch(
+                                checked = automation.status == "ACTIVE",
+                                enabled = state.updatingAutomationId == null,
+                                onCheckedChange = { viewModel.setAutomationActive(automation.id, it) },
+                            )
+                        }
+                        if (automation.promptPreview.isNotBlank()) {
+                            Text(
+                                automation.promptPreview,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 9.dp),
+                            )
+                        }
+                        automation.targetThreadId?.let { targetThreadId ->
+                            val target = state.threads.firstOrNull { it.id == targetThreadId }
+                            if (target != null) {
+                                TextButton(
+                                    onClick = {
+                                        onDismiss()
+                                        viewModel.openThread(target)
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
+                                    modifier = Modifier.padding(top = 4.dp),
+                                ) { Text("打开关联对话") }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!state.isAutomationsLoading && state.automations.isEmpty()) {
+                item {
+                    Text(
+                        "这台 Mac 暂时没有自动化任务。创建和修改完整监控指令仍需在桌面端完成。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            if (state.isAccountLoading && account == null) {
+                item {
+                    Box(Modifier.fillMaxWidth().height(170.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
+            } else if (account != null) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                        shape = RoundedCornerShape(18.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(
+                                account.email ?: "当前 Codex 账户",
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                            Text(
+                                planLabel(account.planType),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f),
+                                modifier = Modifier.padding(top = 3.dp),
+                            )
+                        }
+                    }
+                }
+
+                if (account.limits.isNotEmpty()) {
+                    item {
+                        Text("剩余额度", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    }
+                    items(account.limits, key = { "${it.name}-${it.period}" }) { limit ->
+                        Card(
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(Modifier.padding(15.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(limit.name, fontWeight = FontWeight.Medium)
+                                        Text(
+                                            usagePeriodLabel(limit.period, limit.windowDurationMins),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    Text(
+                                        "剩余 ${limit.remainingPercent.toInt()}%",
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (limit.remainingPercent < 15) {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            MaterialTheme.colorScheme.primary
+                                        },
+                                    )
+                                }
+                                LinearProgressIndicator(
+                                    progress = { (limit.usedPercent / 100.0).toFloat() },
+                                    modifier = Modifier.fillMaxWidth().padding(top = 11.dp).height(7.dp)
+                                        .clip(RoundedCornerShape(99.dp)),
+                                )
+                                Row(Modifier.fillMaxWidth().padding(top = 7.dp)) {
+                                    Text(
+                                        "已用 ${limit.usedPercent.toInt()}%",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Spacer(Modifier.weight(1f))
+                                    limit.resetsAt?.let {
+                                        Text(
+                                            "${formatResetTime(it)} 重置",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (account.unlimitedCredits || account.creditBalance != null || account.resetCredits != null) {
+                    item {
+                        Card(
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column(Modifier.padding(15.dp)) {
+                                Text("额外额度", fontWeight = FontWeight.Medium)
+                                Text(
+                                    when {
+                                        account.unlimitedCredits -> "无限制"
+                                        account.creditBalance != null -> "余额 ${account.creditBalance}"
+                                        else -> "暂无余额信息"
+                                    },
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                                account.resetCredits?.let {
+                                    Text(
+                                        "可用额度重置次数：$it",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (account.lifetimeTokens != null || account.peakDailyTokens != null) {
+                    item {
+                        Text("使用统计", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    }
+                    item {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            UsageStat(
+                                "累计 Token",
+                                formatLargeNumber(account.lifetimeTokens),
+                                Modifier.weight(1f),
+                            )
+                            UsageStat(
+                                "单日峰值",
+                                formatLargeNumber(account.peakDailyTokens),
+                                Modifier.weight(1f),
+                            )
+                        }
+                    }
+                    account.currentStreakDays?.let { streak ->
+                        item {
+                            Text(
+                                "连续使用 $streak 天",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+
+                if (account.unavailable.isNotEmpty()) {
+                    item {
+                        Text(
+                            "部分账户统计暂时不可用，可稍后刷新。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else {
+                item {
+                    Text(
+                        "暂时无法读取账户用量。请确认 Mac 端 Codex 已登录后重试。",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 28.dp),
+                    )
+                }
+            }
+
+            item {
+                HorizontalDivider(Modifier.padding(top = 4.dp))
+                Text(
+                    "Bridge：${state.endpoint}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UsageStat(label: String, value: String, modifier: Modifier = Modifier) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        modifier = modifier,
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun ThreadCard(thread: ThreadSummary, onClick: () -> Unit) {
+    val isActive = thread.status == "active" || thread.activeFlags.isNotEmpty()
+    val needsAttention = thread.activeFlags.any { it == "waitingOnApproval" || it == "waitingOnUserInput" }
+    val activeColor = if (needsAttention) Color(0xFFE88919) else MaterialTheme.colorScheme.primary
+    val activeContainer = if (needsAttention) Color(0xFFFFE8C7) else MaterialTheme.colorScheme.primaryContainer
+    val statusLabel = if (needsAttention) "等待你" else "进行中"
+    Card(
+        onClick = onClick,
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        modifier = Modifier.fillMaxWidth().height(126.dp),
+    ) {
+        Row(
+            Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier.size(42.dp).clip(RoundedCornerShape(13.dp))
+                    .background(
+                        if (isActive) activeColor
+                        else MaterialTheme.colorScheme.primaryContainer,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (isActive) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(26.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.35f),
+                    )
+                }
+                Icon(
+                    Icons.Rounded.Code,
+                    null,
+                    tint = if (isActive) MaterialTheme.colorScheme.onPrimary
+                    else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(21.dp),
+                )
+            }
+            Spacer(Modifier.width(13.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        thread.title,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (isActive) {
+                        Spacer(Modifier.width(8.dp))
+                        Surface(
+                            color = activeContainer,
+                            shape = RoundedCornerShape(999.dp),
+                        ) {
+                            Row(
+                                Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Box(
+                                    Modifier.size(6.dp).clip(CircleShape)
+                                        .background(activeColor),
+                                )
+                                Spacer(Modifier.width(5.dp))
+                                Text(
+                                    statusLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = activeColor,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                        }
+                    }
+                }
+                Box(Modifier.height(38.dp).padding(top = 4.dp)) {
+                    Text(
+                        thread.preview.replace('\n', ' ').ifBlank { "暂无内容预览" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        thread.cwd.substringAfterLast('/').ifBlank { "项目" },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        "  ·  ${formatTime(thread.updatedAt)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (thread.goalStatus != null) {
+                        Spacer(Modifier.width(7.dp))
+                        Text(
+                            if (thread.goalStatus == "paused") "Goal 已暂停" else "Goal",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (thread.goalStatus == "paused") {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.width(4.dp))
+            Icon(
+                Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                null,
+                tint = MaterialTheme.colorScheme.outline,
+            )
+        }
+    }
+}
+
+private sealed interface ChatTimelineItem {
+    val key: String
+}
+
+private data class TimelineMessage(val message: ChatMessage) : ChatTimelineItem {
+    override val key: String = "message-${message.id}"
+}
+
+private data class TimelineProcess(val messages: List<ChatMessage>) : ChatTimelineItem {
+    override val key: String = "process-${messages.first().id}"
+    val turnId: String = messages.firstNotNullOfOrNull { it.turnId.takeIf(String::isNotBlank) }.orEmpty()
+}
+
+private fun isProcessMessage(message: ChatMessage): Boolean =
+    message.role == "tool" || message.role == "status" || message.kind == "plan"
+
+private fun buildChatTimeline(messages: List<ChatMessage>): List<ChatTimelineItem> {
+    val timeline = mutableListOf<ChatTimelineItem>()
+    val processIndexByTurn = mutableMapOf<String, Int>()
+    messages.forEach { message ->
+        if (!isProcessMessage(message)) {
+            timeline += TimelineMessage(message)
+            return@forEach
+        }
+        val groupId = message.turnId.ifBlank { "message-${message.id}" }
+        val existingIndex = processIndexByTurn[groupId]
+        if (existingIndex == null) {
+            processIndexByTurn[groupId] = timeline.size
+            timeline += TimelineProcess(listOf(message))
+        } else {
+            val existing = timeline[existingIndex] as TimelineProcess
+            timeline[existingIndex] = TimelineProcess(existing.messages + message)
+        }
+    }
+    return timeline
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: SnackbarHostState) {
+    val thread = state.selectedThread ?: return
+    val listState = rememberLazyListState()
+    val scrollScope = rememberCoroutineScope()
+    val showsStatus = state.isSending || state.pendingApproval != null
+    val timeline = remember(state.messages) { buildChatTimeline(state.messages) }
+    val liveProcessKey = remember(timeline, state.activeTurnId) {
+        state.activeTurnId?.let { activeTurnId ->
+            timeline.filterIsInstance<TimelineProcess>().lastOrNull { it.turnId == activeTurnId }?.key
+        }
+    }
+    val needsStandaloneLiveProcess = showsStatus && liveProcessKey == null
+    val contentCount = timeline.size + if (needsStandaloneLiveProcess) 1 else 0
+    var threadMenuExpanded by remember { mutableStateOf(false) }
+    var confirmArchive by remember { mutableStateOf(false) }
+    var hasPositionedInitially by remember(thread.id) { mutableStateOf(false) }
+    var previousContentCount by remember(thread.id) { mutableStateOf(0) }
+    val showJumpToLatest by remember(thread.id) {
+        derivedStateOf {
+            val total = listState.layoutInfo.totalItemsCount
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            hasPositionedInitially && total > 0 && lastVisible < total - 2
+        }
+    }
+
+    LaunchedEffect(
+        state.isLoading,
+        state.messages.size,
+        state.messages.lastOrNull()?.text?.length,
+        state.activities.size,
+        state.statusDetail,
+        showsStatus,
+    ) {
+        if (state.isLoading || contentCount <= 0) return@LaunchedEffect
+        val latestIndex = contentCount - 1
+        if (!hasPositionedInitially) {
+            // Opening a long task should feel immediate: jump to the newest turn
+            // after history arrives, without replaying the whole conversation.
+            listState.scrollToItem(latestIndex)
+            hasPositionedInitially = true
+        } else {
+            val previousLastIndex = (previousContentCount - 1).coerceAtLeast(0)
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            val wasFollowingLatest = previousContentCount == 0 || lastVisible >= previousLastIndex - 1
+            if (wasFollowingLatest) listState.animateScrollToItem(latestIndex)
+        }
+        previousContentCount = contentCount
+    }
+
+    Scaffold(
+        modifier = Modifier.imePadding(),
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                navigationIcon = {
+                    IconButton(onClick = viewModel::closeThread) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回")
+                    }
+                },
+                title = {
+                    Column {
+                        Text(
+                            thread.title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            thread.cwd.substringAfterLast('/'),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { viewModel.openThread(thread) }, enabled = !state.isSending) {
+                        Icon(Icons.Rounded.Refresh, "重新同步")
+                    }
+                    Box {
+                        IconButton(onClick = { threadMenuExpanded = true }) {
+                            Icon(Icons.Rounded.MoreVert, "任务菜单")
+                        }
+                        DropdownMenu(
+                            expanded = threadMenuExpanded,
+                            onDismissRequest = { threadMenuExpanded = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("归档任务") },
+                                leadingIcon = { Icon(Icons.Rounded.Archive, null) },
+                                enabled = !state.isSending && !state.isArchivingThread,
+                                onClick = {
+                                    threadMenuExpanded = false
+                                    confirmArchive = true
+                                },
+                            )
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+                modifier = Modifier.statusBarsPadding(),
+            )
+        },
+        bottomBar = { Composer(state, viewModel) },
+        snackbarHost = { SnackbarHost(snackbar) },
+    ) { padding ->
+        if (state.isLoading && state.messages.isEmpty()) {
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        } else {
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        horizontal = if (state.compactChatEnabled) 11.dp else 14.dp,
+                        vertical = if (state.compactChatEnabled) 7.dp else 12.dp,
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(if (state.compactChatEnabled) 7.dp else 12.dp),
+                ) {
+                    items(timeline, key = { it.key }) { item ->
+                        when (item) {
+                            is TimelineMessage -> MessageBubble(
+                                message = item.message,
+                                endpoint = state.endpoint,
+                                token = state.token,
+                                fontSizeSp = state.messageFontSizeSp,
+                                compact = state.compactChatEnabled,
+                            )
+                            is TimelineProcess -> ProcessGroupCard(
+                                group = item,
+                                endpoint = state.endpoint,
+                                token = state.token,
+                                state = state,
+                                viewModel = viewModel,
+                                isLive = item.key == liveProcessKey,
+                                fontSizeSp = state.messageFontSizeSp,
+                                compact = state.compactChatEnabled,
+                            )
+                        }
+                    }
+                    if (needsStandaloneLiveProcess) {
+                        item("live-process") {
+                            ProcessGroupCard(
+                                group = null,
+                                endpoint = state.endpoint,
+                                token = state.token,
+                                state = state,
+                                viewModel = viewModel,
+                                isLive = true,
+                                fontSizeSp = state.messageFontSizeSp,
+                                compact = state.compactChatEnabled,
+                            )
+                        }
+                    }
+                }
+                if (showJumpToLatest) {
+                    FilledIconButton(
+                        onClick = {
+                            scrollScope.launch {
+                                val latest = listState.layoutInfo.totalItemsCount - 1
+                                if (latest >= 0) listState.animateScrollToItem(latest)
+                            }
+                        },
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(18.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = MaterialTheme.colorScheme.primary,
+                        ),
+                    ) {
+                        Icon(Icons.Rounded.ArrowDownward, "回到最新消息")
+                    }
+                }
+            }
+        }
+    }
+    if (confirmArchive) {
+        AlertDialog(
+            onDismissRequest = { confirmArchive = false },
+            icon = { Icon(Icons.Rounded.Archive, null) },
+            title = { Text("归档这个任务？") },
+            text = { Text("任务会从最近任务中移除，但不会删除历史记录。桌面端也会同步更新。") },
+            dismissButton = {
+                TextButton(onClick = { confirmArchive = false }) { Text("取消") }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    confirmArchive = false
+                    viewModel.archiveCurrentThread()
+                }) { Text("归档") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ProcessGroupCard(
+    group: TimelineProcess?,
+    endpoint: String,
+    token: String,
+    state: UiState,
+    viewModel: MainViewModel,
+    isLive: Boolean,
+    fontSizeSp: Float,
+    compact: Boolean,
+) {
+    val messages = group?.messages.orEmpty()
+    val approval = state.pendingApproval.takeIf { isLive }
+    val recentActivities = state.activities.takeLast(8).takeIf { isLive }.orEmpty()
+    var expanded by remember(group?.key ?: "live-process") { mutableStateOf(false) }
+    LaunchedEffect(approval?.requestId) {
+        if (approval != null) expanded = true
+    }
+    LaunchedEffect(isLive) {
+        if (!isLive) expanded = false
+    }
+    Card(
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column {
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = if (compact) 34.dp else 38.dp)
+                    .clickable { expanded = !expanded }
+                    .padding(horizontal = 11.dp, vertical = if (compact) 5.dp else 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (isLive) {
+                    CircularProgressIndicator(
+                        Modifier.size(14.dp),
+                        strokeWidth = 1.8.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                } else {
+                    Icon(
+                        Icons.Rounded.Code,
+                        null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(15.dp),
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (isLive) state.currentStatus.ifBlank { "Codex 正在处理…" } else "过程",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (messages.isNotEmpty()) {
+                    Text(
+                        "${messages.size} 项",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                    Spacer(Modifier.width(4.dp))
+                }
+                Icon(
+                    if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                    if (expanded) "收起全部过程" else "展开全部过程",
+                    tint = MaterialTheme.colorScheme.outline,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            if (expanded) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Column(Modifier.padding(horizontal = 12.dp, vertical = if (compact) 7.dp else 10.dp)) {
+                    if (isLive && state.statusDetail.isNotBlank()) {
+                        Text(
+                            state.statusDetail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 5,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (recentActivities.isNotEmpty()) {
+                        if (isLive && state.statusDetail.isNotBlank()) {
+                            HorizontalDivider(Modifier.padding(vertical = 9.dp))
+                        }
+                        recentActivities.forEach { ActivityRow(it, fontSizeSp) }
+                    }
+                    messages.forEachIndexed { index, message ->
+                        if (recentActivities.isNotEmpty() || index > 0) {
+                            HorizontalDivider(Modifier.padding(vertical = 9.dp))
+                        }
+                        ProcessMessageContent(message, endpoint, token, fontSizeSp, compact)
+                    }
+                    approval?.let {
+                        if (recentActivities.isNotEmpty() || messages.isNotEmpty()) {
+                            HorizontalDivider(Modifier.padding(vertical = 9.dp))
+                        }
+                        if (it.canApprove) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                TextButton(onClick = { viewModel.respondToApproval(false) }) { Text("拒绝") }
+                                Button(onClick = { viewModel.respondToApproval(true) }) { Text("允许一次") }
+                            }
+                        } else {
+                            Text(
+                                "这种交互暂时不能在手机上直接回答；可以停止任务，再把答案作为新消息发送。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (
+                        (!isLive && messages.isEmpty()) ||
+                        (isLive && state.statusDetail.isBlank() && recentActivities.isEmpty() &&
+                            messages.isEmpty() && approval == null)
+                    ) {
+                        Text(
+                            "暂无过程详情",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProcessMessageContent(
+    message: ChatMessage,
+    endpoint: String,
+    token: String,
+    fontSizeSp: Float,
+    compact: Boolean,
+) {
+    val isTool = message.role == "tool"
+    Text(
+        internalMessageTitle(message),
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.primary,
+    )
+    if (!message.command.isNullOrBlank()) {
+        Text(
+            message.command,
+            fontFamily = FontFamily.Monospace,
+            fontSize = (fontSizeSp - 2f).coerceAtLeast(11f).sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 5.dp),
+        )
+    }
+    if (message.text.isNotBlank()) {
+        if (isTool) {
+            Text(
+                message.text,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = (fontSizeSp - 1f).coerceAtLeast(11f).sp,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.padding(top = 5.dp),
+            )
+        } else {
+            Box(Modifier.padding(top = 5.dp)) {
+                MarkdownText(
+                    markdown = message.text,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    linkColor = MaterialTheme.colorScheme.primary,
+                    fontSizeSp = fontSizeSp,
+                    compact = compact,
+                )
+            }
+        }
+    }
+    if (message.attachments.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        MediaGallery(message.attachments, endpoint, token)
+    }
+}
+
+@Composable
+private fun ActivityRow(activity: ActivityEntry, fontSizeSp: Float) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.Top) {
+        Box(
+            Modifier.padding(top = 6.dp).size(6.dp).clip(CircleShape).background(
+                if (activity.phase == "completed") Color(0xFF36B37E) else MaterialTheme.colorScheme.primary,
+            ),
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                activity.title,
+                fontSize = (fontSizeSp - 2f).coerceAtLeast(11f).sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (activity.detail.isNotBlank()) {
+                Text(
+                    activity.detail.replace('\n', ' '),
+                    fontSize = (fontSizeSp - 3f).coerceAtLeast(10f).sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageBubble(
+    message: ChatMessage,
+    endpoint: String,
+    token: String,
+    fontSizeSp: Float,
+    compact: Boolean,
+) {
+    val isUser = message.role == "user"
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+    ) {
+        Card(
+            shape = RoundedCornerShape(
+                topStart = 18.dp,
+                topEnd = 18.dp,
+                bottomStart = if (isUser) 18.dp else 5.dp,
+                bottomEnd = if (isUser) 5.dp else 18.dp,
+            ),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isUser) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.surface,
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = if (isUser) 0.dp else 1.dp),
+            modifier = Modifier.fillMaxWidth(if (compact) 0.97f else 0.92f),
+        ) {
+            Column(
+                Modifier.padding(
+                    horizontal = if (compact) 12.dp else 15.dp,
+                    vertical = if (compact) 8.dp else 12.dp,
+                ),
+            ) {
+                if (message.text.isNotBlank()) {
+                    MarkdownText(
+                        markdown = message.text,
+                        color = if (isUser) {
+                            MaterialTheme.colorScheme.onPrimary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        linkColor = if (isUser) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                        fontSizeSp = fontSizeSp,
+                        compact = compact,
+                    )
+                }
+                if (message.attachments.isNotEmpty()) {
+                    if (message.text.isNotBlank()) Spacer(Modifier.height(10.dp))
+                    MediaGallery(message.attachments, endpoint, token)
+                }
+            }
+        }
+    }
+}
+
+private fun internalMessageTitle(message: ChatMessage): String = when (message.kind) {
+    "reasoning" -> "思考过程"
+    "plan" -> "执行计划"
+    "commandExecution" -> "命令执行"
+    "fileChange" -> "文件修改"
+    "mcpToolCall", "dynamicToolCall" -> "工具调用"
+    "collabAgentToolCall" -> "协作任务"
+    "webSearch" -> "网络搜索"
+    "imageGeneration" -> "图片生成"
+    "imageView" -> "图片查看"
+    "contextCompaction" -> "上下文整理"
+    else -> "过程信息"
+}
+
+@Composable
+private fun MediaGallery(attachments: List<MediaAttachment>, endpoint: String, token: String) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var opened by remember { mutableStateOf<MediaAttachment?>(null) }
+    var pendingSave by remember { mutableStateOf<Pair<MediaAttachment, String>?>(null) }
+    val saveMedia: (MediaAttachment, String) -> Unit = { attachment, source ->
+        scope.launch {
+            Toast.makeText(context, "正在保存…", Toast.LENGTH_SHORT).show()
+            runCatching { MediaSaver.save(context, attachment, source) }
+                .onSuccess { name ->
+                    Toast.makeText(context, "已保存到相册：$name", Toast.LENGTH_LONG).show()
+                }
+                .onFailure { error ->
+                    Toast.makeText(context, "保存失败：${error.message ?: "未知错误"}", Toast.LENGTH_LONG).show()
+                }
+        }
+    }
+    val storagePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val media = pendingSave
+        pendingSave = null
+        if (granted && media != null) {
+            saveMedia(media.first, media.second)
+        } else if (!granted) {
+            Toast.makeText(context, "没有存储权限，无法保存媒体", Toast.LENGTH_LONG).show()
+        }
+    }
+    val requestSave: (MediaAttachment, String) -> Unit = { attachment, source ->
+        if (
+            Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingSave = attachment to source
+            storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            saveMedia(attachment, source)
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        attachments.forEach { attachment ->
+            val source = remember(attachment.source, endpoint, token) {
+                resolveMediaSource(attachment, endpoint, token)
+            }
+            when (attachment.kind) {
+                "image" -> MediaImage(
+                    attachment = attachment,
+                    source = source,
+                    onClick = { opened = attachment },
+                    onLongClick = { requestSave(attachment, source) },
+                )
+                "video" -> MediaVideoPreview(
+                    attachment = attachment,
+                    source = source,
+                    onClick = { opened = attachment },
+                    onLongClick = { requestSave(attachment, source) },
+                )
+                "audio" -> MediaFileCard(
+                    attachment = attachment,
+                    label = "播放音频",
+                    icon = { Icon(Icons.Rounded.Audiotrack, null) },
+                    onClick = { opened = attachment },
+                )
+            }
+        }
+    }
+
+    opened?.let { attachment ->
+        val source = resolveMediaSource(attachment, endpoint, token)
+        when (attachment.kind) {
+            "image" -> ImagePreviewDialog(
+                attachment = attachment,
+                source = source,
+                onSave = { requestSave(attachment, source) },
+                onDismiss = { opened = null },
+            )
+            "video", "audio" -> MediaPlayerDialog(
+                attachment = attachment,
+                source = source,
+                onSave = { requestSave(attachment, source) },
+                onDismiss = { opened = null },
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MediaVideoPreview(
+    attachment: MediaAttachment,
+    source: String,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    val context = LocalContext.current
+    val videoImageLoader = remember(context) {
+        ImageLoader.Builder(context)
+            .components { add(VideoFrameDecoder.Factory()) }
+            .build()
+    }
+    Box(
+        Modifier.fillMaxWidth().aspectRatio(16f / 9f)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.Black)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+    ) {
+        AsyncImage(
+            model = remember(source) {
+                ImageRequest.Builder(context)
+                    .data(source)
+                    .videoFrameMillis(700)
+                    .crossfade(true)
+                    .build()
+            },
+            imageLoader = videoImageLoader,
+            contentDescription = attachment.name,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize(),
+        )
+        Surface(
+            shape = CircleShape,
+            color = Color.Black.copy(alpha = 0.62f),
+            contentColor = Color.White,
+            modifier = Modifier.align(Alignment.Center).size(58.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Rounded.PlayArrow, "播放视频", modifier = Modifier.size(34.dp))
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MediaImage(
+    attachment: MediaAttachment,
+    source: String,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    val context = LocalContext.current
+    AsyncImage(
+        model = remember(source) {
+            ImageRequest.Builder(context)
+                .data(source)
+                .crossfade(true)
+                .build()
+        },
+        contentDescription = attachment.name,
+        contentScale = ContentScale.Fit,
+        modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp, max = 360.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+    )
+}
+
+@Composable
+private fun MediaFileCard(
+    attachment: MediaAttachment,
+    label: String,
+    icon: @Composable () -> Unit,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 13.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(38.dp),
+            ) { Box(contentAlignment = Alignment.Center) { icon() } }
+            Spacer(Modifier.width(11.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    attachment.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            }
+            Icon(Icons.Rounded.PlayArrow, null, tint = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+@Composable
+private fun ImagePreviewDialog(
+    attachment: MediaAttachment,
+    source: String,
+    onSave: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    var scale by remember(source) { mutableStateOf(1f) }
+    var offset by remember(source) { mutableStateOf(Offset.Zero) }
+    var canvasSize by remember(source) { mutableStateOf(IntSize.Zero) }
+    var controlsVisible by remember(source) { mutableStateOf(true) }
+    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+        val newScale = (scale * zoomChange).coerceIn(1f, 6f)
+        if (newScale <= 1.01f) {
+            offset = Offset.Zero
+        } else {
+            val maxX = canvasSize.width * (newScale - 1f) / 2f
+            val maxY = canvasSize.height * (newScale - 1f) / 2f
+            offset = Offset(
+                x = (offset.x + panChange.x).coerceIn(-maxX, maxX),
+                y = (offset.y + panChange.y).coerceIn(-maxY, maxY),
+            )
+        }
+        scale = newScale
+    }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+        ),
+    ) {
+        Box(
+            Modifier.fillMaxSize().background(Color.Black),
+        ) {
+            AsyncImage(
+                model = remember(source) {
+                    ImageRequest.Builder(context).data(source).crossfade(true).build()
+                },
+                contentDescription = attachment.name,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(top = 52.dp, bottom = 46.dp)
+                    .onSizeChanged { canvasSize = it }
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = offset.x
+                        translationY = offset.y
+                    }
+                    .transformable(transformState)
+                    .pointerInput(source) {
+                        detectTapGestures(
+                            onTap = { controlsVisible = !controlsVisible },
+                            onDoubleTap = {
+                                if (scale > 1f) {
+                                    scale = 1f
+                                    offset = Offset.Zero
+                                } else {
+                                    scale = 2.5f
+                                }
+                            },
+                            onLongPress = { onSave() },
+                        )
+                    },
+            )
+            if (controlsVisible) {
+                Surface(
+                    color = Color.Black.copy(alpha = 0.58f),
+                    contentColor = Color.White,
+                    modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Rounded.Close, "关闭图片")
+                        }
+                        Text(
+                            attachment.name,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                        )
+                        IconButton(onClick = onSave) {
+                            Icon(Icons.Rounded.Download, "保存图片")
+                        }
+                    }
+                }
+                Surface(
+                    color = Color.Black.copy(alpha = 0.58f),
+                    contentColor = Color.White.copy(alpha = 0.88f),
+                    shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                ) {
+                    Text(
+                        "双指缩放 · 拖动查看 · 长按保存",
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.navigationBarsPadding().padding(horizontal = 18.dp, vertical = 10.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MediaPlayerDialog(
+    attachment: MediaAttachment,
+    source: String,
+    onSave: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var prepared by remember(source) { mutableStateOf(false) }
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+        ),
+    ) {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            AndroidView(
+                factory = { context ->
+                    VideoView(context).apply {
+                        val controller = MediaController(context)
+                        controller.setAnchorView(this)
+                        setMediaController(controller)
+                        setVideoURI(Uri.parse(source))
+                        setOnPreparedListener { player ->
+                            player.isLooping = false
+                            prepared = true
+                            start()
+                            controller.show(2500)
+                        }
+                    }
+                },
+                modifier = if (attachment.kind == "audio") {
+                    Modifier.fillMaxWidth().height(180.dp).align(Alignment.Center)
+                } else {
+                    Modifier.fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .padding(top = 52.dp, bottom = 10.dp)
+                },
+            )
+            if (!prepared) {
+                CircularProgressIndicator(
+                    color = Color.White,
+                    modifier = Modifier.align(Alignment.Center).size(34.dp),
+                )
+            }
+            if (attachment.kind == "audio") {
+                Icon(
+                    Icons.Rounded.Audiotrack,
+                    null,
+                    tint = Color.White.copy(alpha = 0.72f),
+                    modifier = Modifier.align(Alignment.Center).size(52.dp),
+                )
+            }
+            Surface(
+                color = Color.Black.copy(alpha = 0.58f),
+                contentColor = Color.White,
+                modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Rounded.Close, "关闭播放器")
+                    }
+                    Text(
+                        attachment.name,
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                    )
+                    IconButton(onClick = onSave) {
+                        Icon(Icons.Rounded.Download, "保存媒体")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun resolveMediaSource(attachment: MediaAttachment, endpoint: String, token: String): String {
+    if (!attachment.isLocal) return attachment.source
+    val bridge = Uri.parse(endpoint)
+    val httpScheme = if (bridge.scheme == "wss") "https" else "http"
+    return Uri.Builder()
+        .scheme(httpScheme)
+        .encodedAuthority(bridge.encodedAuthority)
+        .path("/media")
+        .appendQueryParameter("path", attachment.source)
+        .appendQueryParameter("token", token)
+        .build()
+        .toString()
+}
+
+@Composable
+private fun MarkdownText(
+    markdown: String,
+    color: Color,
+    linkColor: Color,
+    fontSizeSp: Float,
+    compact: Boolean,
+) {
+    val context = LocalContext.current
+    val markwon = remember(context) {
+        Markwon.builder(context)
+            .usePlugin(StrikethroughPlugin.create())
+            .usePlugin(TablePlugin.create(context))
+            .usePlugin(TaskListPlugin.create(context))
+            .build()
+    }
+    val textColor = color.toArgb()
+    val resolvedLinkColor = linkColor.toArgb()
+    AndroidView(
+        factory = { viewContext ->
+            TextView(viewContext).apply {
+                setTextIsSelectable(true)
+                linksClickable = true
+                movementMethod = LinkMovementMethod.getInstance()
+                includeFontPadding = false
+                setLineSpacing(0f, 1.08f)
+                setPadding(0, 0, 0, 0)
+            }
+        },
+        update = { textView ->
+            textView.setTextColor(textColor)
+            textView.setLinkTextColor(resolvedLinkColor)
+            textView.textSize = fontSizeSp
+            textView.setLineSpacing(0f, if (compact) 1.02f else 1.08f)
+            markwon.setMarkdown(textView, markdown)
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+@Composable
+private fun Composer(state: UiState, viewModel: MainViewModel) {
+    var showModeSheet by remember { mutableStateOf(false) }
+    var showGoalEditor by remember { mutableStateOf(false) }
+    var confirmClearGoal by remember { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
+            .navigationBarsPadding(),
+    ) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f))
+        state.goal?.let { goal ->
+            GoalStatusBar(
+                state = state,
+                onEdit = { showGoalEditor = true },
+                onTogglePaused = { viewModel.setGoalPaused(goal.status != "paused") },
+            )
+        }
+        ModelControls(
+            state = state,
+            viewModel = viewModel,
+            showModeButton = true,
+            onModeClick = { showModeSheet = true },
+        )
+        Row(
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            OutlinedTextField(
+                value = state.input,
+                onValueChange = viewModel::setInput,
+                placeholder = {
+                    Text(if (state.isSending) "输入引导，调整当前任务…" else "给 Codex 发送指令…")
+                },
+                modifier = Modifier.weight(1f),
+                minLines = 1,
+                maxLines = 5,
+                shape = RoundedCornerShape(20.dp),
+            )
+            Spacer(Modifier.width(9.dp))
+            if (state.isSending) {
+                FilledIconButton(
+                    onClick = viewModel::interrupt,
+                    modifier = Modifier.size(50.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    ),
+                ) {
+                    Icon(Icons.Rounded.Stop, "停止")
+                }
+                Spacer(Modifier.width(7.dp))
+            }
+            FilledIconButton(
+                onClick = viewModel::sendMessage,
+                enabled = state.input.isNotBlank(),
+                modifier = Modifier.size(50.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary),
+            ) {
+                Icon(Icons.AutoMirrored.Rounded.Send, if (state.isSending) "发送引导" else "发送")
+            }
+        }
+    }
+
+    if (showModeSheet) {
+        ModeSheet(
+            state = state,
+            viewModel = viewModel,
+            onDismiss = { showModeSheet = false },
+            onGoal = {
+                showModeSheet = false
+                showGoalEditor = true
+            },
+        )
+    }
+    if (showGoalEditor) {
+        GoalEditorDialog(
+            state = state,
+            onDismiss = { showGoalEditor = false },
+            onSave = { objective, budget ->
+                showGoalEditor = false
+                viewModel.setGoal(objective, budget)
+            },
+            onClear = if (state.goal != null) {
+                {
+                    showGoalEditor = false
+                    confirmClearGoal = true
+                }
+            } else {
+                null
+            },
+        )
+    }
+    if (confirmClearGoal) {
+        AlertDialog(
+            onDismissRequest = { confirmClearGoal = false },
+            icon = { Icon(Icons.Rounded.Flag, null) },
+            title = { Text("清除这个 Goal？") },
+            text = { Text("目标记录和进度会从这个任务中移除，对话历史不会删除。") },
+            dismissButton = { TextButton(onClick = { confirmClearGoal = false }) { Text("取消") } },
+            confirmButton = {
+                Button(onClick = {
+                    confirmClearGoal = false
+                    viewModel.clearGoal()
+                }) { Text("清除") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ModelControls(
+    state: UiState,
+    viewModel: MainViewModel,
+    showModeButton: Boolean = false,
+    onModeClick: () -> Unit = {},
+) {
+    val selectedModel = state.models.firstOrNull { it.id == state.selectedModel }
+    val modelItems = state.models.map { it.id to it.displayName }
+    val effortItems = selectedModel?.efforts.orEmpty().map { it.id to effortLabel(it.id) }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (showModeButton) {
+            val modeLabel = when {
+                state.goal != null -> "Goal"
+                state.selectedMode == "plan" -> "Plan"
+                else -> "普通"
+            } + if (state.fastModeEnabled) " · Fast" else ""
+            TextButton(
+                onClick = onModeClick,
+                enabled = !state.isSending && !state.isModeUpdating,
+                contentPadding = PaddingValues(horizontal = 7.dp, vertical = 0.dp),
+            ) {
+                Icon(Icons.Rounded.Add, null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(2.dp))
+                Text(modeLabel, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+            }
+            Spacer(Modifier.width(2.dp))
+        }
+        CompactSelector(
+            label = selectedModel?.displayName ?: "模型加载中",
+            items = modelItems,
+            enabled = modelItems.isNotEmpty() && !state.isSending,
+            onSelect = viewModel::selectModel,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(4.dp))
+        CompactSelector(
+            label = effortLabel(state.selectedEffort),
+            items = effortItems,
+            enabled = effortItems.isNotEmpty() && !state.isSending && state.selectedMode != "plan",
+            onSelect = viewModel::selectEffort,
+        )
+    }
+}
+
+@Composable
+private fun GoalStatusBar(
+    state: UiState,
+    onEdit: () -> Unit,
+    onTogglePaused: () -> Unit,
+) {
+    val goal = state.goal ?: return
+    val status = when (goal.status) {
+        "paused" -> "已暂停"
+        "blocked" -> "受阻"
+        "usageLimited" -> "用量受限"
+        "budgetLimited" -> "预算已用完"
+        "complete" -> "已完成"
+        else -> "运行中"
+    }
+    Surface(
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Rounded.Flag,
+                null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(19.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Goal · $status",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    goal.objective,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(
+                onClick = onTogglePaused,
+                enabled = !state.isModeUpdating && goal.status in listOf("active", "paused"),
+                modifier = Modifier.size(38.dp),
+            ) {
+                Icon(
+                    if (goal.status == "paused") Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
+                    if (goal.status == "paused") "继续 Goal" else "暂停 Goal",
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            IconButton(onClick = onEdit, enabled = !state.isModeUpdating, modifier = Modifier.size(38.dp)) {
+                Icon(Icons.Rounded.Edit, "编辑 Goal", modifier = Modifier.size(19.dp))
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModeSheet(
+    state: UiState,
+    viewModel: MainViewModel,
+    onDismiss: () -> Unit,
+    onGoal: () -> Unit,
+) {
+    val supportsFast = state.models.firstOrNull { it.id == state.selectedModel }
+        ?.serviceTiers?.any { it.id == "priority" } == true
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 18.dp, end = 18.dp, bottom = 18.dp),
+        ) {
+            Text("运行模式", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(
+                "模式会同步到 Mac 桌面端，并从下一轮开始生效。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = 13.dp),
+            )
+            ModeChoice(
+                title = "普通模式",
+                description = "直接执行你的指令",
+                selected = state.selectedMode == "default",
+                enabled = !state.isModeUpdating,
+                onClick = {
+                    viewModel.selectMode("default")
+                    onDismiss()
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+            ModeChoice(
+                title = "Plan 规划模式",
+                description = "先梳理上下文和方案，再决定如何执行",
+                selected = state.selectedMode == "plan",
+                enabled = !state.isModeUpdating,
+                onClick = {
+                    viewModel.selectMode("plan")
+                    onDismiss()
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+            ModeChoice(
+                title = "Goal 目标模式",
+                description = "持续推进一个可运行数小时或数天的目标",
+                selected = state.goal != null,
+                enabled = !state.isModeUpdating,
+                onClick = onGoal,
+            )
+            HorizontalDivider(Modifier.padding(vertical = 14.dp))
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Fast 加速", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (supportsFast) "约 1.5 倍速度，会增加用量" else "当前模型不支持 Fast",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = state.fastModeEnabled,
+                    enabled = supportsFast && !state.isModeUpdating,
+                    onCheckedChange = viewModel::setFastModeEnabled,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModeChoice(
+    title: String,
+    description: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Card(
+        onClick = onClick,
+        enabled = enabled,
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surfaceVariant,
+        ),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.SemiBold)
+                Text(
+                    description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (selected) {
+                Text("当前", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
+}
+
+@Composable
+private fun GoalEditorDialog(
+    state: UiState,
+    onDismiss: () -> Unit,
+    onSave: (String, Long?) -> Unit,
+    onClear: (() -> Unit)?,
+) {
+    var objective by remember(state.goal?.objective) { mutableStateOf(state.goal?.objective.orEmpty()) }
+    var tokenBudget by remember(state.goal?.tokenBudget) {
+        mutableStateOf(state.goal?.tokenBudget?.toString().orEmpty())
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Rounded.Flag, null) },
+        title = { Text(if (state.goal == null) "启动 Goal" else "编辑 Goal") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = objective,
+                    onValueChange = { objective = it },
+                    label = { Text("目标") },
+                    placeholder = { Text("例如：完成并验证移动端的全部功能") },
+                    minLines = 3,
+                    maxLines = 6,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = tokenBudget,
+                    onValueChange = { tokenBudget = it.filter(Char::isDigit) },
+                    label = { Text("Token 预算（可选）") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "留空表示不设置预算。Goal 仍可在当前对话里继续引导。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        dismissButton = {
+            Row {
+                onClear?.let { clear ->
+                    TextButton(onClick = clear) {
+                        Icon(Icons.Rounded.DeleteOutline, null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("清除")
+                    }
+                }
+                TextButton(onClick = onDismiss) { Text("取消") }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(objective.trim(), tokenBudget.toLongOrNull()) },
+                enabled = objective.isNotBlank() && !state.isModeUpdating,
+            ) { Text(if (state.goal == null) "启动" else "保存") }
+        },
+    )
+}
+
+@Composable
+private fun CompactSelector(
+    label: String,
+    items: List<Pair<String, String>>,
+    enabled: Boolean,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier) {
+        TextButton(
+            onClick = { expanded = true },
+            enabled = enabled,
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+        ) {
+            Text(
+                label,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.labelMedium,
+            )
+            Icon(Icons.Rounded.ExpandMore, null, modifier = Modifier.size(17.dp))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            items.forEach { (id, title) ->
+                DropdownMenuItem(
+                    text = { Text(title) },
+                    onClick = {
+                        expanded = false
+                        onSelect(id)
+                    },
+                )
+            }
+        }
+    }
+}
+
+private fun effortLabel(effort: String): String = when (effort.lowercase()) {
+    "none" -> "不思考"
+    "minimal" -> "极简"
+    "low" -> "低"
+    "medium" -> "中"
+    "high" -> "高"
+    "xhigh" -> "很高"
+    "max" -> "最高"
+    "ultra" -> "Ultra"
+    else -> effort.ifBlank { "思考强度" }
+}
+
+private fun permissionProfileLabel(profile: String): String = when (profile) {
+    ":danger-full-access" -> "完全访问"
+    ":workspace" -> "工作区"
+    ":read-only" -> "只读"
+    else -> profile.removePrefix(":").ifBlank { "自定义权限" }
+}
+
+private fun permissionProfileDescription(profile: String): String = when (profile) {
+    ":danger-full-access" -> "可访问整台 Mac、直接联网并运行命令，不逐次询问"
+    ":workspace" -> "可在当前项目内读写；越界或联网时会请求确认"
+    ":read-only" -> "只允许读取；修改、运行或联网时会请求确认"
+    else -> "由这台 Mac 上的 Codex 权限配置定义"
+}
+
+private fun automationScheduleLabel(rrule: String): String {
+    if (rrule.isBlank()) return "按事件运行"
+    val parts = rrule.split(';').mapNotNull { part ->
+        val pieces = part.split('=', limit = 2)
+        if (pieces.size == 2) pieces[0] to pieces[1] else null
+    }.toMap()
+    val interval = parts["INTERVAL"]?.toIntOrNull()?.coerceAtLeast(1) ?: 1
+    return when (parts["FREQ"]?.uppercase()) {
+        "MINUTELY" -> if (interval == 1) "每分钟" else "每 $interval 分钟"
+        "HOURLY" -> if (interval == 1) "每小时" else "每 $interval 小时"
+        "DAILY" -> if (interval == 1) "每天" else "每 $interval 天"
+        "WEEKLY" -> if (interval == 1) "每周" else "每 $interval 周"
+        else -> "定时运行"
+    }
+}
+
+private fun planLabel(plan: String?): String = when (plan?.lowercase()) {
+    "free" -> "Free 方案"
+    "go" -> "Go 方案"
+    "plus" -> "Plus 方案"
+    "pro", "prolite" -> "Pro 方案"
+    "team", "business", "self_serve_business_usage_based" -> "Business 方案"
+    "enterprise", "enterprise_cbp_usage_based", "ent26" -> "Enterprise 方案"
+    "edu" -> "Education 方案"
+    else -> "Codex 账户"
+}
+
+private fun usagePeriodLabel(period: String, durationMins: Long?): String {
+    if (period == "spend") return "费用周期"
+    return when {
+        durationMins == null -> if (period == "primary") "短周期额度" else "长周期额度"
+        durationMins < 60 -> "$durationMins 分钟额度"
+        durationMins < 24 * 60 -> "${durationMins / 60} 小时额度"
+        durationMins < 7 * 24 * 60 -> "${durationMins / (24 * 60)} 天额度"
+        else -> "${durationMins / (7 * 24 * 60)} 周额度"
+    }
+}
+
+private fun formatResetTime(timestampSeconds: Long): String =
+    SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(timestampSeconds * 1000))
+
+private fun formatLargeNumber(value: Long?): String = when {
+    value == null -> "—"
+    value >= 1_000_000_000 -> String.format(Locale.getDefault(), "%.1fB", value / 1_000_000_000.0)
+    value >= 1_000_000 -> String.format(Locale.getDefault(), "%.1fM", value / 1_000_000.0)
+    value >= 1_000 -> String.format(Locale.getDefault(), "%.1fK", value / 1_000.0)
+    else -> value.toString()
+}
+
+private fun formatTime(timestampSeconds: Long): String {
+    if (timestampSeconds <= 0) return ""
+    return SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(timestampSeconds * 1000))
+}

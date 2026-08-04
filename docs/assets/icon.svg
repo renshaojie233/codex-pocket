@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">Codex Pocket</title>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2d2d32"/>
+      <stop offset="1" stop-color="#101014"/>
+    </linearGradient>
+    <linearGradient id="cloud" x1="0.25" y1="0" x2="0.7" y2="1">
+      <stop offset="0" stop-color="#b8adff"/>
+      <stop offset="0.52" stop-color="#6783ff"/>
+      <stop offset="1" stop-color="#4024ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#3324ff" flood-opacity=".32"/>
+    </filter>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="58" fill="url(#background)"/>
+  <path d="M70 190c-27 0-48-21-48-48 0-24 17-44 41-48 5-35 31-58 65-58 22 0 41 10 53 27 7-3 14-5 23-5 28 0 51 23 51 51 0 21-12 38-30 46-4 28-27 48-55 48H70Z" fill="url(#cloud)" filter="url(#shadow)"/>
+  <path d="m83 98-14 14 25 28-25 29 14 14 39-43-39-42Zm45 64h58v20h-58v-20Z" fill="#fff"/>
+</svg>

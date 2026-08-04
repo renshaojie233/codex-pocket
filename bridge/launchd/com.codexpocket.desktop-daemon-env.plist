@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.codexpocket.desktop-daemon-env</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-c</string>
+        <string>/bin/launchctl setenv CODEX_APP_SERVER_USE_LOCAL_DAEMON 1 &amp;&amp; /usr/bin/open -gj -a ChatGPT</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/path/to/codex-pocket/bridge/data/desktop-start.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/codex-pocket/bridge/data/desktop-start-error.log</string>
+</dict>
+</plist>

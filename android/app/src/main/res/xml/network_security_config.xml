@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- The Bridge uses ws:// inside an encrypted Tailscale tunnel. Never point
+         the app at an untrusted public or shared-network endpoint. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

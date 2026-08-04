@@ -1,0 +1,15 @@
+.DS_Store
+.gradle/
+.idea/
+local.properties
+outputs/
+work/
+bridge/node_modules/
+bridge/data/
+android/.gradle/
+android/local.properties
+android/app/build/
+android/build/
+# The private build may reuse the official icon bundled with ChatGPT.
+# Public source builds fall back to the original vector artwork in drawable/.
+android/app/src/main/res/drawable-nodpi/ic_codex_launcher_art.png
