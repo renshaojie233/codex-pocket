@@ -1450,6 +1450,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             }
             "turn.completed" -> {
                 if (belongsToSelectedThread(data)) {
+                    val completedThread = _state.value.selectedThread
                     stopActiveThreadSync(data.optString("threadId"))
                     _state.update {
                         it.copy(
@@ -1461,6 +1462,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                         )
                     }
                     cacheCurrentMessages()
+                    if (completedThread != null) {
+                        viewModelScope.launch {
+                            delay(COMPLETED_THREAD_SYNC_DELAY_MILLIS)
+                            if (_state.value.selectedThread?.id == completedThread.id) {
+                                refreshOpenThread(completedThread)
+                            }
+                        }
+                    }
                 }
                 refreshThreads()
             }
@@ -1940,6 +1949,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     companion object {
         private const val CACHE_WRITE_DELAY_MILLIS = 650L
         private const val ACTIVE_THREAD_SYNC_INTERVAL_MILLIS = 8_000L
+        private const val COMPLETED_THREAD_SYNC_DELAY_MILLIS = 350L
         private const val DISCARDED_LOCAL_MESSAGES_PREFERENCE = "discarded-local-message-ids"
         private const val MAX_DISCARDED_LOCAL_MESSAGES = 500
         private const val MAX_IMAGES_PER_MESSAGE = 4

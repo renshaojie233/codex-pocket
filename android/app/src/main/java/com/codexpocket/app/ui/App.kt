@@ -22,6 +22,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
@@ -32,16 +33,19 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -114,6 +118,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -139,6 +144,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
@@ -166,6 +172,8 @@ import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.floor
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
 
@@ -1304,8 +1312,6 @@ private fun isProcessMessage(
 }
 
 internal fun buildChatTimeline(messages: List<ChatMessage>): List<ChatTimelineItem> {
-    val timeline = mutableListOf<ChatTimelineItem>()
-    val processIndexByTurn = mutableMapOf<String, Int>()
     val lastAssistantMessageByTurn = buildMap {
         messages.forEachIndexed { index, message ->
             if (message.role == "assistant" && message.kind == "agentMessage" && message.turnId.isNotBlank()) {
@@ -1313,22 +1319,27 @@ internal fun buildChatTimeline(messages: List<ChatMessage>): List<ChatTimelineIt
             }
         }
     }
+    val processMessagesByGroup = linkedMapOf<String, MutableList<ChatMessage>>()
+    val lastProcessIndexByGroup = mutableMapOf<String, Int>()
     messages.forEachIndexed { index, message ->
-        if (!isProcessMessage(message, index, lastAssistantMessageByTurn)) {
-            timeline += TimelineMessage(message)
-            return@forEachIndexed
-        }
-        val groupId = message.turnId.ifBlank { "message-${message.id}" }
-        val existingIndex = processIndexByTurn[groupId]
-        if (existingIndex == null) {
-            processIndexByTurn[groupId] = timeline.size
-            timeline += TimelineProcess(listOf(message))
-        } else {
-            val existing = timeline[existingIndex] as TimelineProcess
-            timeline[existingIndex] = TimelineProcess(existing.messages + message)
+        if (isProcessMessage(message, index, lastAssistantMessageByTurn)) {
+            val groupId = message.turnId.ifBlank { "message-${message.id}" }
+            processMessagesByGroup.getOrPut(groupId, ::mutableListOf) += message
+            lastProcessIndexByGroup[groupId] = index
         }
     }
-    return timeline
+    return buildList {
+        messages.forEachIndexed { index, message ->
+            if (!isProcessMessage(message, index, lastAssistantMessageByTurn)) {
+                add(TimelineMessage(message))
+                return@forEachIndexed
+            }
+            val groupId = message.turnId.ifBlank { "message-${message.id}" }
+            if (lastProcessIndexByGroup[groupId] == index) {
+                add(TimelineProcess(processMessagesByGroup.getValue(groupId)))
+            }
+        }
+    }
 }
 
 internal fun moveActiveProcessToEnd(
@@ -1546,6 +1557,10 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
                         Icon(Icons.Rounded.ArrowDownward, "回到最新消息")
                     }
                 }
+                ChatScrollbar(
+                    listState = listState,
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                )
             }
         }
     }
@@ -1564,6 +1579,92 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
                     viewModel.archiveCurrentThread()
                 }) { Text("归档") }
             },
+        )
+    }
+}
+
+@Composable
+private fun ChatScrollbar(
+    listState: LazyListState,
+    modifier: Modifier = Modifier,
+) {
+    val layoutInfo = listState.layoutInfo
+    val visibleItems = layoutInfo.visibleItemsInfo
+    val totalItems = layoutInfo.totalItemsCount
+    val canScroll = listState.canScrollBackward || listState.canScrollForward
+    var trackHeightPx by remember { mutableIntStateOf(0) }
+    var isDragging by remember { mutableStateOf(false) }
+    var targetIndex by remember { mutableIntStateOf(0) }
+    var targetOffsetPx by remember { mutableIntStateOf(0) }
+    if (!canScroll || totalItems <= 0 || visibleItems.isEmpty()) return
+
+    val density = LocalDensity.current
+    val viewportHeightPx = (layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset)
+        .coerceAtLeast(1)
+    val estimatedItemSizePx = visibleItems.map { it.size }.average().toFloat().coerceAtLeast(1f)
+    val visibleItemSpan = (viewportHeightPx / estimatedItemSizePx).coerceAtMost(totalItems.toFloat())
+    val maxPosition = (totalItems - visibleItemSpan).coerceAtLeast(0.001f)
+    val firstVisibleSize = visibleItems.firstOrNull {
+        it.index == listState.firstVisibleItemIndex
+    }?.size?.coerceAtLeast(1) ?: estimatedItemSizePx.roundToInt()
+    val currentPosition = listState.firstVisibleItemIndex +
+        listState.firstVisibleItemScrollOffset.toFloat() / firstVisibleSize
+    val scrollFraction = (currentPosition / maxPosition).coerceIn(0f, 1f)
+    val minimumThumbPx = with(density) { 44.dp.toPx() }
+    val thumbHeightPx = if (trackHeightPx > 0) {
+        (trackHeightPx * (visibleItemSpan / totalItems))
+            .coerceIn(minimumThumbPx.coerceAtMost(trackHeightPx.toFloat()), trackHeightPx.toFloat())
+    } else {
+        minimumThumbPx
+    }
+    val thumbTravelPx = (trackHeightPx - thumbHeightPx).coerceAtLeast(1f)
+    val thumbTopPx = scrollFraction * thumbTravelPx
+
+    LaunchedEffect(isDragging, targetIndex, targetOffsetPx) {
+        if (isDragging) listState.scrollToItem(targetIndex, targetOffsetPx)
+    }
+
+    Box(
+        modifier
+            .fillMaxHeight()
+            .width(24.dp)
+            .onSizeChanged { trackHeightPx = it.height }
+            .pointerInput(totalItems, trackHeightPx, thumbHeightPx, maxPosition) {
+                fun updateTarget(pointerY: Float) {
+                    val fraction = ((pointerY - thumbHeightPx / 2f) / thumbTravelPx)
+                        .coerceIn(0f, 1f)
+                    val targetPosition = fraction * maxPosition
+                    targetIndex = floor(targetPosition).toInt().coerceIn(0, totalItems - 1)
+                    targetOffsetPx = ((targetPosition - targetIndex) * estimatedItemSizePx)
+                        .roundToInt()
+                        .coerceAtLeast(0)
+                }
+                detectVerticalDragGestures(
+                    onDragStart = { offset ->
+                        isDragging = true
+                        updateTarget(offset.y)
+                    },
+                    onVerticalDrag = { change, _ ->
+                        change.consume()
+                        updateTarget(change.position.y)
+                    },
+                    onDragEnd = { isDragging = false },
+                    onDragCancel = { isDragging = false },
+                )
+            },
+    ) {
+        Box(
+            Modifier
+                .align(Alignment.TopCenter)
+                .offset { IntOffset(0, thumbTopPx.roundToInt()) }
+                .width(if (isDragging) 7.dp else 5.dp)
+                .height(with(density) { thumbHeightPx.toDp() })
+                .clip(RoundedCornerShape(999.dp))
+                .background(
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                        alpha = if (isDragging) 0.78f else 0.38f,
+                    ),
+                ),
         )
     }
 }

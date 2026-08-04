@@ -90,6 +90,24 @@ class ChatTimelineTest {
         })
     }
 
+    @Test
+    fun `completed process stays directly above the final answer after steering`() {
+        val timeline = buildChatTimeline(
+            listOf(
+                message("user", role = "user", kind = "userMessage"),
+                message("progress-1", phase = "commentary"),
+                message("steer", role = "user", kind = "userMessage"),
+                message("progress-2", phase = "commentary"),
+                message("final", phase = "final_answer"),
+            ),
+        )
+
+        assertEquals(4, timeline.size)
+        assertEquals("steer", (timeline[1] as TimelineMessage).message.id)
+        assertTrue(timeline[2] is TimelineProcess)
+        assertEquals("final", (timeline[3] as TimelineMessage).message.id)
+    }
+
     private fun message(
         id: String,
         role: String = "assistant",
