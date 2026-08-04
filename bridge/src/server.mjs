@@ -22,6 +22,7 @@ const pendingServerRequests = new Map();
 const sockets = new Set();
 const automationsRoot = resolve(homedir(), ".codex", "automations");
 const DEFAULT_PERMISSION_PROFILE = ":danger-full-access";
+const DEFAULT_MESSAGE_LIMIT = 120;
 
 function permissionProfileFromSettings(settings) {
   const activeId = settings?.activePermissionProfile?.id;
@@ -526,7 +527,7 @@ async function handleRequest(message) {
       const requestedLimit = Number(params.messageLimit);
       const messageLimit = Number.isFinite(requestedLimit)
         ? Math.min(200, Math.max(20, Math.trunc(requestedLimit)))
-        : undefined;
+        : DEFAULT_MESSAGE_LIMIT;
       return {
         ...mapThreadDetail(threadResult.thread, { messageLimit }),
         settings,
