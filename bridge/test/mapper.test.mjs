@@ -76,6 +76,29 @@ test("flattens turn items into mobile messages", () => {
   });
   assert.equal(detail.messages.length, 2);
   assert.deepEqual(detail.messages.map((message) => message.role), ["user", "assistant"]);
+  assert.equal(detail.totalMessageCount, 2);
+  assert.equal(detail.hasOlderMessages, false);
+});
+
+test("returns only the newest requested message window", () => {
+  const detail = mapThreadDetail({
+    id: "thread-window",
+    preview: "Window",
+    cwd: "/tmp/project",
+    status: { type: "idle" },
+    turns: [{
+      id: "turn-window",
+      items: [1, 2, 3, 4].map((number) => ({
+        id: `message-${number}`,
+        type: "agentMessage",
+        text: `Message ${number}`,
+      })),
+    }],
+  }, { messageLimit: 2 });
+
+  assert.deepEqual(detail.messages.map((message) => message.id), ["message-3", "message-4"]);
+  assert.equal(detail.totalMessageCount, 4);
+  assert.equal(detail.hasOlderMessages, true);
 });
 
 test("maps selectable models and reasoning efforts", () => {

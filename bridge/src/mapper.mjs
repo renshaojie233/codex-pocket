@@ -338,7 +338,7 @@ function activityFromItem(item, phase) {
   }
 }
 
-export function mapThreadDetail(thread) {
+export function mapThreadDetail(thread, options = {}) {
   const messages = [];
   for (const turn of thread.turns || []) {
     for (const item of turn.items || []) {
@@ -348,9 +348,14 @@ export function mapThreadDetail(thread) {
       }
     }
   }
+  const requestedLimit = Number(options.messageLimit);
+  const hasLimit = Number.isInteger(requestedLimit) && requestedLimit > 0;
+  const limitedMessages = hasLimit ? messages.slice(-requestedLimit) : messages;
   return {
     thread: mapThreadSummary(thread),
-    messages,
+    messages: limitedMessages,
+    totalMessageCount: messages.length,
+    hasOlderMessages: limitedMessages.length < messages.length,
     activeTurnId: (thread.turns || []).findLast((turn) => turn.status === "inProgress")?.id || null,
   };
 }

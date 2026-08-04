@@ -14,7 +14,7 @@ import { mapModel, mapNotification, mapThreadDetail, mapThreadSummary } from "./
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.12.0";
+const VERSION = "0.13.0";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const codex = new CodexClient({ codexBin: config.codexBin });
 const loadedThreads = new Map();
@@ -523,7 +523,15 @@ async function handleRequest(message) {
         }),
         codex.request("thread/goal/get", { threadId: params.threadId }),
       ]);
-      return { ...mapThreadDetail(threadResult.thread), settings, goal: mapGoal(goalResult.goal) };
+      const requestedLimit = Number(params.messageLimit);
+      const messageLimit = Number.isFinite(requestedLimit)
+        ? Math.min(200, Math.max(20, Math.trunc(requestedLimit)))
+        : undefined;
+      return {
+        ...mapThreadDetail(threadResult.thread, { messageLimit }),
+        settings,
+        goal: mapGoal(goalResult.goal),
+      };
     }
     case "thread.resume": {
       const settings = await ensureThreadLoaded(params.threadId);

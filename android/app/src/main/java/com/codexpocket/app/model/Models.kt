@@ -180,4 +180,6 @@ data class UiState(
     val completionNotificationsEnabled: Boolean = false,
     val messageFontSizeSp: Float = 15f,
     val compactChatEnabled: Boolean = false,
+    val messageCacheThreadCount: Int = 0,
+    val messageCacheBytes: Long = 0,
 )

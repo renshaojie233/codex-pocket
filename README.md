@@ -29,6 +29,7 @@ flowchart LR
 ## 功能
 
 - 查看、新建、归档 Codex 任务，并自动打开到最新一轮消息。
+- 手机缓存最近消息，打开即显示；后台只同步最新一批，缓存超限自动清理。
 - 实时同步回复、思考状态、工具进度，以及运行中的引导消息。
 - 支持 Markdown、图片、视频、全屏缩放和媒体保存。
 - 选择模型、思考强度、Default / Plan、Goal 与 Fast 模式。
@@ -72,7 +73,7 @@ bridge/data/config.json
 APK 会生成到：
 
 ```text
-outputs/codex-pocket-0.12.0.apk
+outputs/codex-pocket-0.13.0.apk
 ```
 
 也可以在手机浏览器打开下面的私有下载页：
@@ -108,6 +109,7 @@ npm --prefix bridge test
 - Bridge 默认只监听 Mac 的 Tailscale IPv4，并要求随机 Bearer Token。
 - `ws://` 流量由 Tailscale 的 WireGuard 隧道加密；不要把端口转发到公网。
 - `bridge/data/`、`android/local.properties`、`outputs/` 和本机专属图标均不会提交。
+- 手机消息缓存位于应用私有缓存目录，最多 20 个任务或 12 MB；清理缓存不会影响 Mac 历史记录。
 - “完全访问”会移除 Codex 本地沙箱限制，只应在可信任务中使用。
 
 ## 项目结构

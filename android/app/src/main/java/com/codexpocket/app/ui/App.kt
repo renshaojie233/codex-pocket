@@ -823,6 +823,41 @@ private fun SettingsSheet(state: UiState, viewModel: MainViewModel, onDismiss: (
             }
 
             item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("手机消息缓存", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "${state.messageCacheThreadCount} 个任务 · ${formatCacheSize(state.messageCacheBytes)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = viewModel::clearMessageCache,
+                                enabled = state.messageCacheThreadCount > 0,
+                            ) {
+                                Icon(Icons.Rounded.DeleteOutline, null, modifier = Modifier.size(17.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text("清空")
+                            }
+                        }
+                        Text(
+                            "打开时先显示手机缓存，再同步 Mac 最近 120 条消息。每个任务最多保留 240 条，整体最多 20 个任务或 12 MB；超出后自动清理最早缓存，不会删除 Mac 上的任何记录。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                    }
+                }
+            }
+
+            item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("自动化与监控", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -1295,7 +1330,7 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
         state.statusDetail,
         showsStatus,
     ) {
-        if (state.isLoading || contentCount <= 0) return@LaunchedEffect
+        if (contentCount <= 0) return@LaunchedEffect
         val latestIndex = contentCount - 1
         if (!hasPositionedInitially) {
             // Opening a long task should feel immediate: jump to the newest turn
@@ -2681,6 +2716,12 @@ private fun formatLargeNumber(value: Long?): String = when {
     value >= 1_000_000 -> String.format(Locale.getDefault(), "%.1fM", value / 1_000_000.0)
     value >= 1_000 -> String.format(Locale.getDefault(), "%.1fK", value / 1_000.0)
     else -> value.toString()
+}
+
+private fun formatCacheSize(bytes: Long): String = when {
+    bytes >= 1024L * 1024L -> String.format(Locale.getDefault(), "%.1f MB", bytes / (1024.0 * 1024.0))
+    bytes >= 1024L -> String.format(Locale.getDefault(), "%.0f KB", bytes / 1024.0)
+    else -> "$bytes B"
 }
 
 private fun formatTime(timestampSeconds: Long): String {

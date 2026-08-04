@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.core.content.edit
+import com.codexpocket.app.cache.MessageCacheStore
+import com.codexpocket.app.cache.mergeMessageWindows
 import com.codexpocket.app.model.ActivityEntry
 import com.codexpocket.app.model.AccountStatus
 import com.codexpocket.app.model.AutomationSummary
@@ -25,17 +27,26 @@ import com.codexpocket.app.network.BridgeClient
 import com.codexpocket.app.notification.TaskNotificationService
 import com.codexpocket.app.notification.TaskNotifications
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
 class MainViewModel(application: Application) : AndroidViewModel(application), BridgeClient.Listener {
     private val preferences = application.getSharedPreferences("codex-pocket", 0)
     private val client = BridgeClient(this)
+    private val messageCache = MessageCacheStore(application.cacheDir)
+    private val initialCacheStats = messageCache.stats()
+    private val cacheWriteJobs = ConcurrentHashMap<String, Job>()
+    private var threadLoadGeneration = 0L
     private val _state = MutableStateFlow(
         UiState(
             endpoint = preferences.getString("endpoint", BuildConfig.BRIDGE_ENDPOINT)
@@ -54,6 +65,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 "default-permission-profile",
                 ":danger-full-access",
             ) ?: ":danger-full-access",
+            messageCacheThreadCount = initialCacheStats.threadCount,
+            messageCacheBytes = initialCacheStats.bytes,
         ),
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -302,6 +315,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     }
 
     fun disconnect() {
+        cacheCurrentMessages(delayMillis = 0)
         client.disconnect()
         _state.update {
             it.copy(
@@ -529,6 +543,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     }
 
     fun openThread(thread: ThreadSummary) {
+        cacheCurrentMessages(delayMillis = 0)
+        val generation = ++threadLoadGeneration
         _state.update {
             it.copy(
                 selectedThread = thread,
@@ -544,51 +560,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 goal = null,
             )
         }
-        client.request("thread.read", JSONObject().put("threadId", thread.id)) { result ->
-            onMain {
-                result.fold(
-                    onSuccess = { payload ->
-                        val messages = parseMessages(payload.optJSONArray("messages") ?: JSONArray())
-                        val settings = payload.optJSONObject("settings")
-                        val threadPayload = payload.optJSONObject("thread")
-                        val goal = parseGoal(payload.optJSONObject("goal"))
-                        _state.update { state ->
-                            val model = settings?.optString("model").orEmpty()
-                                .takeIf(String::isNotBlank) ?: state.selectedModel
-                            val modelOption = state.models.firstOrNull { it.id == model }
-                            val effort = settings?.optString("effort").orEmpty()
-                                .takeIf(String::isNotBlank)
-                                ?: state.selectedEffort.takeIf { current ->
-                                    modelOption?.efforts?.any { it.id == current } == true
-                                }
-                                ?: modelOption?.defaultEffort.orEmpty()
-                            state.copy(
-                                messages = messages,
-                                isLoading = false,
-                                isSending = threadPayload?.optString("status") == "active",
-                                activeTurnId = payload.optString("activeTurnId").takeIf { it.isNotBlank() },
-                                currentStatus = if (threadPayload?.optString("status") == "active") {
-                                    "Codex 正在处理…"
-                                } else {
-                                    ""
-                                },
-                                selectedModel = model,
-                                selectedEffort = effort,
-                                selectedMode = settings?.optString("mode", "default") ?: "default",
-                                fastModeEnabled = settings?.optString("serviceTier") == "priority",
-                                currentPermissionProfile = settings?.optString("permissionProfile")
-                                    ?.ifBlank { null },
-                                goal = goal,
+        viewModelScope.launch {
+            val cached = withContext(Dispatchers.IO) { messageCache.read(thread.id) }
+            if (generation != threadLoadGeneration || _state.value.selectedThread?.id != thread.id) {
+                return@launch
+            }
+            if (cached.isNotEmpty()) _state.update { it.copy(messages = cached) }
+
+            val params = JSONObject()
+                .put("threadId", thread.id)
+                .put("messageLimit", MessageCacheStore.LATEST_SYNC_MESSAGE_COUNT)
+            client.request("thread.read", params) { result ->
+                onMain {
+                    if (generation != threadLoadGeneration || _state.value.selectedThread?.id != thread.id) {
+                        return@onMain
+                    }
+                    result.fold(
+                        onSuccess = { payload ->
+                            val fresh = parseMessages(payload.optJSONArray("messages") ?: JSONArray())
+                            val settings = payload.optJSONObject("settings")
+                            val threadPayload = payload.optJSONObject("thread")
+                            val goal = parseGoal(payload.optJSONObject("goal"))
+                            val cachedIds = cached.mapTo(HashSet()) { it.id }
+                            val liveMessages = _state.value.messages.filter { message ->
+                                message.isStreaming || message.turnId == "pending" || message.id !in cachedIds
+                            }
+                            val mergedMessages = mergeMessageWindows(
+                                MessageCacheStore.MAX_MESSAGES_PER_THREAD,
+                                cached,
+                                fresh,
+                                liveMessages,
                             )
-                        }
-                    },
-                    onFailure = { fail(it.message ?: "无法读取任务内容") },
-                )
+                            _state.update { state ->
+                                val model = settings?.optString("model").orEmpty()
+                                    .takeIf(String::isNotBlank) ?: state.selectedModel
+                                val modelOption = state.models.firstOrNull { it.id == model }
+                                val effort = settings?.optString("effort").orEmpty()
+                                    .takeIf(String::isNotBlank)
+                                    ?: state.selectedEffort.takeIf { current ->
+                                        modelOption?.efforts?.any { it.id == current } == true
+                                    }
+                                    ?: modelOption?.defaultEffort.orEmpty()
+                                state.copy(
+                                    messages = mergedMessages,
+                                    isLoading = false,
+                                    isSending = threadPayload?.optString("status") == "active",
+                                    activeTurnId = payload.optString("activeTurnId").takeIf { it.isNotBlank() },
+                                    currentStatus = if (threadPayload?.optString("status") == "active") {
+                                        "Codex 正在处理…"
+                                    } else {
+                                        ""
+                                    },
+                                    selectedModel = model,
+                                    selectedEffort = effort,
+                                    selectedMode = settings?.optString("mode", "default") ?: "default",
+                                    fastModeEnabled = settings?.optString("serviceTier") == "priority",
+                                    currentPermissionProfile = settings?.optString("permissionProfile")
+                                        ?.ifBlank { null },
+                                    goal = goal,
+                                )
+                            }
+                            scheduleMessageCache(thread.id, mergedMessages)
+                        },
+                        onFailure = { fail(it.message ?: "无法读取任务内容") },
+                    )
+                }
             }
         }
     }
 
-    fun closeThread() {
+    fun closeThread() = closeThread(preserveCache = true)
+
+    private fun closeThread(preserveCache: Boolean) {
+        if (preserveCache) cacheCurrentMessages(delayMillis = 0)
+        threadLoadGeneration += 1
         _state.update {
             it.copy(
                 selectedThread = null,
@@ -635,6 +680,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 error = null,
             )
         }
+        cacheCurrentMessages()
         val params = JSONObject()
             .put("threadId", thread.id)
             .put("text", text)
@@ -656,9 +702,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                             )
                         }
                     },
-                    onFailure = {
-                        _state.update { state -> state.copy(isSending = false) }
-                        fail(it.message ?: "发送失败")
+                    onFailure = { error ->
+                        _state.update { state ->
+                            state.copy(
+                                input = state.input.ifBlank { text },
+                                messages = state.messages.filterNot { it.id == clientMessageId },
+                                isSending = false,
+                            )
+                        }
+                        cacheCurrentMessages()
+                        fail(error.message ?: "发送失败")
                     },
                 )
             }
@@ -689,6 +742,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 error = null,
             )
         }
+        cacheCurrentMessages()
         client.request(
             "turn.steer",
             JSONObject()
@@ -714,6 +768,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                                 messages = state.messages.filterNot { it.id == clientMessageId },
                             )
                         }
+                        cacheCurrentMessages()
                         fail(error.message ?: "无法引导当前任务")
                     },
                 )
@@ -834,6 +889,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             onMain {
                 result.fold(
                     onSuccess = {
+                        removeCachedThread(thread.id)
                         _state.update {
                             it.copy(
                                 isArchivingThread = false,
@@ -887,6 +943,62 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         }
         client.request("codex.respond", params) { result ->
             onMain { result.onFailure { fail(it.message ?: "无法提交授权结果") } }
+        }
+    }
+
+    fun clearMessageCache() {
+        cacheWriteJobs.values.forEach { it.cancel() }
+        cacheWriteJobs.clear()
+        viewModelScope.launch(Dispatchers.IO) {
+            val stats = runCatching { messageCache.clear() }
+                .getOrElse { messageCache.stats() }
+            _state.update {
+                it.copy(
+                    messageCacheThreadCount = stats.threadCount,
+                    messageCacheBytes = stats.bytes,
+                )
+            }
+        }
+    }
+
+    private fun cacheCurrentMessages(delayMillis: Long = CACHE_WRITE_DELAY_MILLIS) {
+        val current = _state.value
+        val threadId = current.selectedThread?.id ?: return
+        if (current.messages.isEmpty()) return
+        scheduleMessageCache(threadId, current.messages, delayMillis)
+    }
+
+    private fun scheduleMessageCache(
+        threadId: String,
+        messages: List<ChatMessage>,
+        delayMillis: Long = CACHE_WRITE_DELAY_MILLIS,
+    ) {
+        val snapshot = messages.toList()
+        cacheWriteJobs.remove(threadId)?.cancel()
+        cacheWriteJobs[threadId] = viewModelScope.launch(Dispatchers.IO) {
+            if (delayMillis > 0) delay(delayMillis)
+            val stats = runCatching { messageCache.write(threadId, snapshot) }
+                .getOrElse { messageCache.stats() }
+            _state.update {
+                it.copy(
+                    messageCacheThreadCount = stats.threadCount,
+                    messageCacheBytes = stats.bytes,
+                )
+            }
+        }
+    }
+
+    private fun removeCachedThread(threadId: String) {
+        cacheWriteJobs.remove(threadId)?.cancel()
+        viewModelScope.launch(Dispatchers.IO) {
+            val stats = runCatching { messageCache.remove(threadId) }
+                .getOrElse { messageCache.stats() }
+            _state.update {
+                it.copy(
+                    messageCacheThreadCount = stats.threadCount,
+                    messageCacheBytes = stats.bytes,
+                )
+            }
         }
     }
 
@@ -961,13 +1073,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                             pendingApproval = null,
                         )
                     }
+                    cacheCurrentMessages()
                 }
                 refreshThreads()
             }
             "thread.catalog" -> {
-                val removedCurrent = (data.optString("action") == "archived" ||
-                    data.optString("action") == "deleted") && belongsToSelectedThread(data)
-                if (removedCurrent) closeThread() else refreshThreads()
+                val removed = data.optString("action") == "archived" ||
+                    data.optString("action") == "deleted"
+                if (removed) data.optString("threadId").takeIf(String::isNotBlank)?.let(::removeCachedThread)
+                val removedCurrent = removed && belongsToSelectedThread(data)
+                if (removedCurrent) closeThread(preserveCache = false) else refreshThreads()
             }
             "thread.settings" -> {
                 if (belongsToSelectedThread(data)) {
@@ -1087,6 +1202,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 )
             }
         }
+        cacheCurrentMessages()
     }
 
     private fun applyStreamingActivity(data: JSONObject, title: String, kind: String) {
@@ -1182,6 +1298,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 state.copy(messages = messages)
             }
         }
+        cacheCurrentMessages()
     }
 
     private fun parseThreads(array: JSONArray): List<ThreadSummary> = buildList {
@@ -1335,7 +1452,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     }
 
     override fun onCleared() {
+        cacheWriteJobs.values.forEach { it.cancel() }
+        val current = _state.value
+        current.selectedThread?.id?.let { threadId ->
+            if (current.messages.isNotEmpty()) runCatching { messageCache.write(threadId, current.messages) }
+        }
         client.disconnect()
         super.onCleared()
+    }
+
+    companion object {
+        private const val CACHE_WRITE_DELAY_MILLIS = 650L
     }
 }
