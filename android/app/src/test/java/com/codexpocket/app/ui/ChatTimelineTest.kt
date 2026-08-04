@@ -57,7 +57,7 @@ class ChatTimelineTest {
 
         assertEquals(1, timeline.size)
         assertTrue(timeline.single() is TimelineProcess)
-        assertEquals("process-turn-1", timeline.single().key)
+        assertEquals("process-turn-1-update-1", timeline.single().key)
     }
 
     @Test
@@ -73,7 +73,7 @@ class ChatTimelineTest {
     }
 
     @Test
-    fun `active process follows steering and failed messages at the end of the timeline`() {
+    fun `steering stays after the process messages that happened before it`() {
         val timeline = buildChatTimeline(
             listOf(
                 message("user", role = "user", kind = "userMessage"),
@@ -82,16 +82,14 @@ class ChatTimelineTest {
             ),
         )
 
-        val ordered = moveActiveProcessToEnd(timeline, "turn-1")
-
-        assertTrue(ordered.last() is TimelineProcess)
-        assertEquals(listOf("user", "steer"), ordered.dropLast(1).map {
-            (it as TimelineMessage).message.id
-        })
+        assertEquals(3, timeline.size)
+        assertEquals("user", (timeline[0] as TimelineMessage).message.id)
+        assertEquals("progress", (timeline[1] as TimelineProcess).messages.single().id)
+        assertEquals("steer", (timeline[2] as TimelineMessage).message.id)
     }
 
     @Test
-    fun `completed process stays directly above the final answer after steering`() {
+    fun `process updates remain on both sides of steering in chronological order`() {
         val timeline = buildChatTimeline(
             listOf(
                 message("user", role = "user", kind = "userMessage"),
@@ -102,10 +100,12 @@ class ChatTimelineTest {
             ),
         )
 
-        assertEquals(4, timeline.size)
-        assertEquals("steer", (timeline[1] as TimelineMessage).message.id)
-        assertTrue(timeline[2] is TimelineProcess)
-        assertEquals("final", (timeline[3] as TimelineMessage).message.id)
+        assertEquals(5, timeline.size)
+        assertEquals("progress-1", (timeline[1] as TimelineProcess).messages.single().id)
+        assertEquals("steer", (timeline[2] as TimelineMessage).message.id)
+        assertEquals("progress-2", (timeline[3] as TimelineProcess).messages.single().id)
+        assertEquals("final", (timeline[4] as TimelineMessage).message.id)
+        assertTrue(timeline[1].key != timeline[3].key)
     }
 
     @Test
@@ -142,6 +142,28 @@ class ChatTimelineTest {
         )
 
         assertEquals("正在检查 · 同步消息", status)
+    }
+
+    @Test
+    fun `a tall latest process only counts as bottom when its end is visible`() {
+        assertTrue(
+            isNearLatestPosition(
+                totalItems = 5,
+                lastVisibleIndex = 4,
+                lastVisibleBottom = 1020,
+                viewportEnd = 1000,
+                thresholdPx = 44,
+            ),
+        )
+        assertTrue(
+            !isNearLatestPosition(
+                totalItems = 5,
+                lastVisibleIndex = 4,
+                lastVisibleBottom = 1500,
+                viewportEnd = 1000,
+                thresholdPx = 44,
+            ),
+        )
     }
 
     private fun message(

@@ -25,6 +25,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
@@ -178,6 +179,7 @@ import java.util.Locale
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 
 @Composable
 fun CodexPocketApp(viewModel: MainViewModel) {
@@ -1295,7 +1297,7 @@ internal data class TimelineMessage(val message: ChatMessage) : ChatTimelineItem
 
 internal data class TimelineProcess(val messages: List<ChatMessage>) : ChatTimelineItem {
     val turnId: String = messages.firstNotNullOfOrNull { it.turnId.takeIf(String::isNotBlank) }.orEmpty()
-    override val key: String = "process-${turnId.ifBlank { messages.first().id }}"
+    override val key: String = "process-${turnId.ifBlank { "unknown" }}-${messages.first().id}"
 }
 
 private fun isProcessMessage(
@@ -1321,38 +1323,26 @@ internal fun buildChatTimeline(messages: List<ChatMessage>): List<ChatTimelineIt
             }
         }
     }
-    val processMessagesByGroup = linkedMapOf<String, MutableList<ChatMessage>>()
-    val lastProcessIndexByGroup = mutableMapOf<String, Int>()
-    messages.forEachIndexed { index, message ->
-        if (isProcessMessage(message, index, lastAssistantMessageByTurn)) {
-            val groupId = message.turnId.ifBlank { "message-${message.id}" }
-            processMessagesByGroup.getOrPut(groupId, ::mutableListOf) += message
-            lastProcessIndexByGroup[groupId] = index
-        }
-    }
     return buildList {
-        messages.forEachIndexed { index, message ->
-            if (!isProcessMessage(message, index, lastAssistantMessageByTurn)) {
-                add(TimelineMessage(message))
-                return@forEachIndexed
-            }
-            val groupId = message.turnId.ifBlank { "message-${message.id}" }
-            if (lastProcessIndexByGroup[groupId] == index) {
-                add(TimelineProcess(processMessagesByGroup.getValue(groupId)))
+        val pendingProcess = mutableListOf<ChatMessage>()
+        fun flushProcess() {
+            if (pendingProcess.isNotEmpty()) {
+                add(TimelineProcess(pendingProcess.toList()))
+                pendingProcess.clear()
             }
         }
+        messages.forEachIndexed { index, message ->
+            if (isProcessMessage(message, index, lastAssistantMessageByTurn)) {
+                val pendingTurnId = pendingProcess.lastOrNull()?.turnId.orEmpty()
+                if (pendingProcess.isNotEmpty() && pendingTurnId != message.turnId) flushProcess()
+                pendingProcess += message
+            } else {
+                flushProcess()
+                add(TimelineMessage(message))
+            }
+        }
+        flushProcess()
     }
-}
-
-internal fun moveActiveProcessToEnd(
-    timeline: List<ChatTimelineItem>,
-    activeTurnId: String?,
-): List<ChatTimelineItem> {
-    if (activeTurnId.isNullOrBlank()) return timeline
-    val activeProcess = timeline.filterIsInstance<TimelineProcess>()
-        .lastOrNull { it.turnId == activeTurnId } ?: return timeline
-    if (timeline.lastOrNull()?.key == activeProcess.key) return timeline
-    return timeline.filterNot { it.key == activeProcess.key } + activeProcess
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1362,15 +1352,14 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
     val listState = rememberLazyListState()
     val scrollScope = rememberCoroutineScope()
     val showsStatus = state.isSending || state.pendingApproval != null || state.isReconnecting
-    val timeline = remember(state.messages, state.activeTurnId) {
-        moveActiveProcessToEnd(buildChatTimeline(state.messages), state.activeTurnId)
-    }
+    val timeline = remember(state.messages) { buildChatTimeline(state.messages) }
     val liveProcessKey = remember(timeline, state.activeTurnId) {
         state.activeTurnId?.let { activeTurnId ->
             timeline.filterIsInstance<TimelineProcess>().lastOrNull { it.turnId == activeTurnId }?.key
         }
     }
-    val needsStandaloneLiveProcess = showsStatus && liveProcessKey == null
+    val needsStandaloneLiveProcess = showsStatus &&
+        (liveProcessKey == null || timeline.lastOrNull()?.key != liveProcessKey)
     val contentCount = timeline.size + if (needsStandaloneLiveProcess) 1 else 0
     val savedScrollPosition = remember(thread.id) { viewModel.chatScrollPosition(thread.id) }
     val latestTimeline by rememberUpdatedState(timeline)
@@ -1378,12 +1367,11 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
     var threadMenuExpanded by remember { mutableStateOf(false) }
     var confirmArchive by remember { mutableStateOf(false) }
     var hasPositionedInitially by remember(thread.id) { mutableStateOf(false) }
-    var previousContentCount by remember(thread.id) { mutableStateOf(0) }
+    var followsLatest by remember(thread.id) { mutableStateOf(true) }
+    val bottomThresholdPx = with(LocalDensity.current) { 44.dp.roundToPx() }
     val showJumpToLatest by remember(thread.id) {
         derivedStateOf {
-            val total = listState.layoutInfo.totalItemsCount
-            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            hasPositionedInitially && total > 0 && lastVisible < total - 2
+            hasPositionedInitially && !listState.isNearLatest(bottomThresholdPx)
         }
     }
 
@@ -1406,9 +1394,8 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
 
     LaunchedEffect(
         state.isLoading,
-        state.messages.size,
-        state.messages.lastOrNull()?.text?.length,
-        state.activities.size,
+        state.messages.hashCode(),
+        state.activities.hashCode(),
         state.statusDetail,
         showsStatus,
     ) {
@@ -1426,17 +1413,28 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
             }
             if (restoredIndex != null) {
                 listState.scrollToItem(restoredIndex, savedScrollPosition?.second ?: 0)
+                followsLatest = listState.isNearLatest(bottomThresholdPx)
             } else {
-                listState.scrollToItem(latestIndex)
+                listState.scrollToLatest(latestIndex)
+                followsLatest = true
             }
             hasPositionedInitially = true
-        } else {
-            val previousLastIndex = (previousContentCount - 1).coerceAtLeast(0)
-            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-            val wasFollowingLatest = previousContentCount == 0 || lastVisible >= previousLastIndex - 1
-            if (wasFollowingLatest) listState.animateScrollToItem(latestIndex)
+        } else if (followsLatest) {
+            listState.scrollToLatest(latestIndex)
         }
-        previousContentCount = contentCount
+    }
+
+    LaunchedEffect(thread.id, listState, hasPositionedInitially) {
+        if (!hasPositionedInitially) return@LaunchedEffect
+        listState.interactionSource.interactions.collect { interaction ->
+            when (interaction) {
+                is DragInteraction.Start -> followsLatest = false
+                is DragInteraction.Stop, is DragInteraction.Cancel -> {
+                    snapshotFlow { listState.isScrollInProgress }.first { !it }
+                    followsLatest = listState.isNearLatest(bottomThresholdPx)
+                }
+            }
+        }
     }
 
     LaunchedEffect(
@@ -1547,7 +1545,8 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
                                 token = state.token,
                                 state = state,
                                 viewModel = viewModel,
-                                isLive = item.key == liveProcessKey,
+                                isLive = item.turnId == state.activeTurnId,
+                                showLiveStatus = item.key == liveProcessKey && !needsStandaloneLiveProcess,
                                 fontSizeSp = state.messageFontSizeSp,
                                 compact = state.compactChatEnabled,
                             )
@@ -1562,6 +1561,7 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
                                 state = state,
                                 viewModel = viewModel,
                                 isLive = true,
+                                showLiveStatus = true,
                                 fontSizeSp = state.messageFontSizeSp,
                                 compact = state.compactChatEnabled,
                             )
@@ -1576,9 +1576,10 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
                 if (showJumpToLatest) {
                     FilledIconButton(
                         onClick = {
+                            followsLatest = true
                             scrollScope.launch {
                                 val latest = listState.layoutInfo.totalItemsCount - 1
-                                if (latest >= 0) listState.animateScrollToItem(latest)
+                                if (latest >= 0) listState.scrollToLatest(latest)
                             }
                         },
                         modifier = Modifier.align(Alignment.BottomEnd).padding(18.dp),
@@ -1593,6 +1594,10 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
                 ChatScrollbar(
                     listState = listState,
                     modifier = Modifier.align(Alignment.CenterEnd),
+                    onUserScrollStart = { followsLatest = false },
+                    onUserScrollEnd = {
+                        followsLatest = listState.isNearLatest(bottomThresholdPx)
+                    },
                 )
             }
         }
@@ -1620,6 +1625,8 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
 private fun ChatScrollbar(
     listState: LazyListState,
     modifier: Modifier = Modifier,
+    onUserScrollStart: () -> Unit = {},
+    onUserScrollEnd: () -> Unit = {},
 ) {
     val layoutInfo = listState.layoutInfo
     val visibleItems = layoutInfo.visibleItemsInfo
@@ -1662,13 +1669,22 @@ private fun ChatScrollbar(
             .onSizeChanged { trackHeightPx = it.height }
             .pointerInput(totalItems, trackHeightPx) {
                 detectVerticalDragGestures(
-                    onDragStart = { isDragging = true },
+                    onDragStart = {
+                        isDragging = true
+                        onUserScrollStart()
+                    },
                     onVerticalDrag = { change, dragAmount ->
                         change.consume()
                         listState.dispatchRawDelta(dragAmount * contentPixelsPerTrackPixel)
                     },
-                    onDragEnd = { isDragging = false },
-                    onDragCancel = { isDragging = false },
+                    onDragEnd = {
+                        isDragging = false
+                        onUserScrollEnd()
+                    },
+                    onDragCancel = {
+                        isDragging = false
+                        onUserScrollEnd()
+                    },
                 )
             },
     ) {
@@ -1688,6 +1704,38 @@ private fun ChatScrollbar(
     }
 }
 
+private fun LazyListState.isNearLatest(thresholdPx: Int): Boolean {
+    val info = layoutInfo
+    val lastVisible = info.visibleItemsInfo.lastOrNull() ?: return false
+    return isNearLatestPosition(
+        totalItems = info.totalItemsCount,
+        lastVisibleIndex = lastVisible.index,
+        lastVisibleBottom = lastVisible.offset + lastVisible.size,
+        viewportEnd = info.viewportEndOffset,
+        thresholdPx = thresholdPx,
+    )
+}
+
+internal fun isNearLatestPosition(
+    totalItems: Int,
+    lastVisibleIndex: Int,
+    lastVisibleBottom: Int,
+    viewportEnd: Int,
+    thresholdPx: Int,
+): Boolean = totalItems > 0 &&
+    lastVisibleIndex == totalItems - 1 &&
+    lastVisibleBottom <= viewportEnd + thresholdPx
+
+private suspend fun LazyListState.scrollToLatest(latestIndex: Int) {
+    if (latestIndex < 0) return
+    scrollToItem(latestIndex)
+    val info = layoutInfo
+    val latest = info.visibleItemsInfo.lastOrNull { it.index == latestIndex } ?: return
+    val viewportHeight = (info.viewportEndOffset - info.viewportStartOffset).coerceAtLeast(1)
+    val offsetInsideLatest = (latest.size - viewportHeight + info.afterContentPadding).coerceAtLeast(0)
+    if (offsetInsideLatest > 0) scrollToItem(latestIndex, offsetInsideLatest)
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ProcessGroupCard(
@@ -1697,13 +1745,14 @@ private fun ProcessGroupCard(
     state: UiState,
     viewModel: MainViewModel,
     isLive: Boolean,
+    showLiveStatus: Boolean,
     fontSizeSp: Float,
     compact: Boolean,
 ) {
     val messages = group?.messages.orEmpty()
     val disclosureKey = "${state.selectedThread?.id}:${group?.key ?: "live-process"}"
     val expanded = disclosureKey in state.expandedProcessGroups
-    val approval = state.pendingApproval.takeIf { isLive }
+    val approval = state.pendingApproval.takeIf { showLiveStatus }
     val recentActivities = state.activities.takeLast(8).takeIf { isLive }.orEmpty()
     val progressPreview = processProgressPreview(
         messages = messages,
@@ -1845,7 +1894,7 @@ private fun ProcessGroupCard(
                             )
                         }
                     }
-                    if (isLive) {
+                    if (showLiveStatus) {
                         val liveStatus = processLiveStatus(
                             activities = recentActivities,
                             currentStatus = state.currentStatus,
@@ -1872,7 +1921,7 @@ private fun ProcessGroupCard(
                     }
                     if (
                         (!isLive && messages.isEmpty()) ||
-                        (isLive && state.statusDetail.isBlank() && recentActivities.isEmpty() &&
+                        (showLiveStatus && state.statusDetail.isBlank() && recentActivities.isEmpty() &&
                             messages.isEmpty() && approval == null)
                     ) {
                         Text(
