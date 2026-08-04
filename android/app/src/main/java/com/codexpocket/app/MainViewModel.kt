@@ -10,6 +10,7 @@ import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.codexpocket.app.cache.MessageCacheStore
 import com.codexpocket.app.cache.excludeDiscardedLocalMessages
+import com.codexpocket.app.cache.mergeChatMessages
 import com.codexpocket.app.cache.mergeMessageWindows
 import com.codexpocket.app.cache.MessageCacheStats
 import com.codexpocket.app.media.PocketMediaLoader
@@ -1840,10 +1841,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             else {
                 val messages = state.messages.toMutableList()
                 val existing = messages[index]
-                messages[index] = parsed.copy(
-                    text = parsed.text.ifBlank { existing.text },
-                    isStreaming = false,
-                )
+                messages[index] = mergeChatMessages(existing, parsed).copy(isStreaming = false)
                 state.copy(messages = messages)
             }
         }

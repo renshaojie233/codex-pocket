@@ -2,6 +2,7 @@ package com.codexpocket.app.ui
 
 import com.codexpocket.app.model.ChatMessage
 import com.codexpocket.app.model.ActivityEntry
+import com.codexpocket.app.model.MediaAttachment
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -128,6 +129,50 @@ class ChatTimelineTest {
             "正在运行 rg -n processActivitySummary android",
             processActivitySummary(command, activeOverride = true),
         )
+    }
+
+    @Test
+    fun `view image tools retain a desktop style image count in the folded preview`() {
+        val images = ChatMessage(
+            id = "images",
+            turnId = "turn-1",
+            role = "tool",
+            text = "",
+            kind = "dynamicToolCall",
+            command = "functions · view_image",
+            status = "completed",
+            attachments = (1..3).map { index ->
+                MediaAttachment(
+                    id = "image-$index",
+                    kind = "image",
+                    source = "/tmp/image-$index.png",
+                    name = "image-$index.png",
+                    isLocal = true,
+                )
+            },
+        )
+        val command = ChatMessage(
+            id = "command",
+            turnId = "turn-1",
+            role = "tool",
+            text = "output",
+            kind = "commandExecution",
+            command = "rg -n imageView android",
+            status = "completed",
+        )
+
+        assertEquals("已查看 3 张图像", processActivitySummary(images))
+        assertEquals(
+            "已查看 3 张图像 · 已运行 rg -n imageView android",
+            processFoldPreview(listOf(images, command)),
+        )
+        val separateViews = images.attachments.mapIndexed { index, attachment ->
+            images.copy(id = "view-$index", attachments = listOf(attachment))
+        }
+        val grouped = collapseViewedImageMessages(separateViews)
+        assertEquals(1, grouped.size)
+        assertEquals(3, grouped.single().attachments.size)
+        assertEquals("已查看 3 张图像", processActivitySummary(grouped.single()))
     }
 
     @Test

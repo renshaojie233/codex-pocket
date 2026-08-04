@@ -276,18 +276,25 @@ export function mapItem(item, turnId) {
       };
     }
     case "imageView":
+      {
+        const sources = dedupeAttachments(
+          [item.path, ...(Array.isArray(item.paths) ? item.paths : [])]
+            .flatMap((source) => Array.isArray(source) ? source : [source])
+            .map((source, index) => mediaAttachment(source, {
+              id: `${item.id}-viewed-image-${index}`,
+              kind: "image",
+              isLocal: true,
+            })),
+        );
       return {
         ...base,
         role: "tool",
         text: "",
         command: "查看图片",
         status: "completed",
-        attachments: [mediaAttachment(item.path, {
-          id: `${item.id}-viewed-image`,
-          kind: "image",
-          isLocal: true,
-        })],
+        attachments: sources,
       };
+      }
     case "contextCompaction":
       return { ...base, role: "status", text: "正在整理较长的上下文", status: "completed" };
     default:

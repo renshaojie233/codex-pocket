@@ -1750,16 +1750,21 @@ private fun ProcessGroupCard(
     compact: Boolean,
 ) {
     val messages = group?.messages.orEmpty()
+    val displayMessages = remember(messages) { collapseViewedImageMessages(messages) }
     val disclosureKey = "${state.selectedThread?.id}:${group?.key ?: "live-process"}"
     val expanded = disclosureKey in state.expandedProcessGroups
     val approval = state.pendingApproval.takeIf { showLiveStatus }
     val recentActivities = state.activities.takeLast(8).takeIf { isLive }.orEmpty()
-    val progressPreview = processProgressPreview(
-        messages = messages,
-        activities = recentActivities,
-        statusDetail = state.statusDetail,
-        isLive = isLive,
-    )
+    val progressPreview = if (isLive) {
+        processProgressPreview(
+            messages = messages,
+            activities = recentActivities,
+            statusDetail = state.statusDetail,
+            isLive = true,
+        )
+    } else {
+        processFoldPreview(messages)
+    }
     val liveTextAlpha = if (isLive) {
         val transition = rememberInfiniteTransition(label = "live-progress-pulse")
         transition.animateFloat(
@@ -1802,7 +1807,9 @@ private fun ProcessGroupCard(
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = if (compact) 36.dp else 40.dp)
                         .combinedClickable(
-                            onClick = {},
+                            onClick = {
+                                viewModel.setProcessGroupExpanded(disclosureKey, !expanded)
+                            },
                             onDoubleClick = {
                                 viewModel.setProcessGroupExpanded(disclosureKey, !expanded)
                             },
@@ -1850,7 +1857,7 @@ private fun ProcessGroupCard(
             if (isLive || expanded) {
                 if (!isLive) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Column(Modifier.padding(horizontal = 12.dp, vertical = if (compact) 7.dp else 10.dp)) {
-                    messages.forEachIndexed { index, message ->
+                    displayMessages.forEachIndexed { index, message ->
                         if (index > 0) {
                             Spacer(Modifier.height(if (compact) 6.dp else 9.dp))
                         }
@@ -1954,6 +1961,9 @@ private fun ProcessActivityDisclosure(
     val scrollState = remember(itemKey) {
         androidx.compose.foundation.ScrollState(viewModel.processItemScrollOffset(itemKey))
     }
+    val hasDetails = message.text.isNotBlank() ||
+        !message.command.isNullOrBlank() || message.attachments.isNotEmpty()
+    val viewedImageCount = viewedImageCount(message)
     DisposableEffect(itemKey) {
         onDispose { viewModel.saveProcessItemScrollOffset(itemKey, scrollState.value) }
     }
@@ -1961,7 +1971,12 @@ private fun ProcessActivityDisclosure(
         Row(
             Modifier.fillMaxWidth()
                 .combinedClickable(
-                    onClick = {},
+                    onClick = {
+                        if (hasDetails) {
+                            viewModel.saveProcessItemScrollOffset(itemKey, scrollState.value)
+                            viewModel.setProcessItemExpanded(itemKey, !expanded)
+                        }
+                    },
                     onDoubleClick = {
                         viewModel.saveProcessItemScrollOffset(itemKey, scrollState.value)
                         viewModel.setProcessItemExpanded(itemKey, !expanded)
@@ -1971,7 +1986,7 @@ private fun ProcessActivityDisclosure(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                if (message.kind == "imageView" || message.kind == "imageGeneration") {
+                if (viewedImageCount > 0 || message.kind == "imageGeneration") {
                     Icons.Rounded.AddPhotoAlternate
                 } else {
                     Icons.Rounded.Code
@@ -1989,7 +2004,7 @@ private fun ProcessActivityDisclosure(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (message.text.isNotBlank() || !message.command.isNullOrBlank() || message.attachments.isNotEmpty()) {
+            if (hasDetails) {
                 Icon(
                     if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
                     if (expanded) "双击收起详情" else "双击查看详情",
@@ -2054,6 +2069,8 @@ internal fun processActivitySummary(message: ChatMessage, activeOverride: Boolea
         .replace(Regex("\\s+"), " ")
         .trim()
         .take(150)
+    val viewedImages = viewedImageCount(message)
+    if (viewedImages > 0) return "${prefix}查看 $viewedImages 张图像"
     return when (message.kind) {
         "commandExecution" -> if (detail.isBlank()) "${prefix}运行命令" else "${prefix}运行 $detail"
         "imageView" -> "${prefix}查看 ${message.attachments.size.coerceAtLeast(1)} 张图像"
@@ -2066,6 +2083,61 @@ internal fun processActivitySummary(message: ChatMessage, activeOverride: Boolea
         "webSearch" -> if (completed) "已搜索网络" else "正在搜索网络"
         "contextCompaction" -> if (completed) "已整理上下文" else "正在整理上下文"
         else -> internalMessageTitle(message) + detail.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()
+    }
+}
+
+private fun viewedImageCount(message: ChatMessage): Int {
+    val command = message.command.orEmpty().lowercase()
+    val isImageView = message.kind == "imageView" ||
+        command.contains("view_image") || command.contains("查看图片") ||
+        command.contains("view image")
+    return if (isImageView) message.attachments.count { it.kind == "image" } else 0
+}
+
+internal fun processFoldPreview(messages: List<ChatMessage>): String {
+    val viewedSources = messages
+        .filter { viewedImageCount(it) > 0 }
+        .flatMap { it.attachments }
+        .filter { it.kind == "image" }
+        .distinctBy { it.source }
+    val latestCommand = messages.lastOrNull { it.kind == "commandExecution" }
+    val actionSummary = buildList {
+        if (viewedSources.isNotEmpty()) add("已查看 ${viewedSources.size} 张图像")
+        latestCommand?.let { add(processActivitySummary(it, activeOverride = false)) }
+    }.joinToString(" · ")
+    if (actionSummary.isNotBlank()) return actionSummary
+    return processProgressPreview(messages, emptyList(), "", isLive = false)
+}
+
+internal fun collapseViewedImageMessages(messages: List<ChatMessage>): List<ChatMessage> = buildList {
+    var index = 0
+    while (index < messages.size) {
+        val first = messages[index]
+        if (viewedImageCount(first) <= 0) {
+            add(first)
+            index += 1
+            continue
+        }
+        val grouped = mutableListOf(first)
+        var cursor = index + 1
+        while (cursor < messages.size && viewedImageCount(messages[cursor]) > 0) {
+            grouped += messages[cursor]
+            cursor += 1
+        }
+        val attachments = grouped.flatMap { it.attachments }.distinctBy { it.source }
+        val isActive = grouped.any {
+            it.status.orEmpty().lowercase() in setOf("inprogress", "started", "running")
+        }
+        add(
+            first.copy(
+                text = grouped.map { it.text }.filter(String::isNotBlank).joinToString("\n\n"),
+                kind = "imageView",
+                command = "查看图片",
+                status = if (isActive) "inProgress" else grouped.last().status,
+                attachments = attachments,
+            ),
+        )
+        index = cursor
     }
 }
 

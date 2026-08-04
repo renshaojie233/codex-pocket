@@ -209,6 +209,27 @@ test("maps reasoning and tool progress notifications", () => {
   assert.equal(started.data.item.command, "npm test");
 });
 
+test("maps every image from a grouped image view event", () => {
+  const completed = mapNotification({
+    method: "item/completed",
+    params: {
+      threadId: "t1",
+      turnId: "r1",
+      item: {
+        id: "images-1",
+        type: "imageView",
+        paths: ["/tmp/one.png", "/tmp/two.png", "/tmp/three.png"],
+      },
+    },
+  });
+
+  assert.equal(completed.data.item.attachments.length, 3);
+  assert.deepEqual(
+    completed.data.item.attachments.map((attachment) => attachment.source),
+    ["/tmp/one.png", "/tmp/two.png", "/tmp/three.png"],
+  );
+});
+
 test("maps shared thread settings and active turn state", () => {
   const settings = mapNotification({
     method: "thread/settings/updated",

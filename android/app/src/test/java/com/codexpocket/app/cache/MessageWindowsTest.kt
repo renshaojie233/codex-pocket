@@ -1,6 +1,7 @@
 package com.codexpocket.app.cache
 
 import com.codexpocket.app.model.ChatMessage
+import com.codexpocket.app.model.MediaAttachment
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -52,6 +53,39 @@ class MessageWindowsTest {
             listOf(authoritative),
             excludeDiscardedLocalMessages(listOf(authoritative), setOf(failed.id)),
         )
+    }
+
+    @Test
+    fun `sparse completion cannot erase a live command or viewed images`() {
+        val live = ChatMessage(
+            id = "tool-1",
+            turnId = "turn-1",
+            role = "tool",
+            text = "partial output",
+            kind = "dynamicToolCall",
+            phase = "commentary",
+            command = "functions · view_image",
+            status = "inProgress",
+            attachments = listOf(
+                MediaAttachment("image-1", "image", "/tmp/one.png", "one.png", isLocal = true),
+                MediaAttachment("image-2", "image", "/tmp/two.png", "two.png", isLocal = true),
+            ),
+        )
+        val sparseCompletion = live.copy(
+            text = "",
+            phase = null,
+            command = null,
+            status = "completed",
+            attachments = emptyList(),
+        )
+
+        val merged = mergeMessageWindows(10, listOf(live), listOf(sparseCompletion)).single()
+
+        assertEquals("functions · view_image", merged.command)
+        assertEquals("partial output", merged.text)
+        assertEquals("commentary", merged.phase)
+        assertEquals("completed", merged.status)
+        assertEquals(listOf("/tmp/one.png", "/tmp/two.png"), merged.attachments.map { it.source })
     }
 
     private fun message(id: String, text: String) = ChatMessage(
