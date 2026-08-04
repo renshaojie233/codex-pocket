@@ -1476,6 +1476,8 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
                                 token = state.token,
                                 fontSizeSp = state.messageFontSizeSp,
                                 compact = state.compactChatEnabled,
+                                onRetry = { viewModel.retryFailedMessage(item.message.id) },
+                                onDiscard = { viewModel.discardFailedMessage(item.message.id) },
                             )
                             is TimelineProcess -> ProcessGroupCard(
                                 group = item,
@@ -1697,7 +1699,7 @@ private fun ProcessGroupCard(
     }
 }
 
-private fun processProgressPreview(
+internal fun processProgressPreview(
     messages: List<ChatMessage>,
     activities: List<ActivityEntry>,
     statusDetail: String,
@@ -1709,7 +1711,7 @@ private fun processProgressPreview(
     }?.text
     val latestProcess = messages.lastOrNull()?.let { it.command.orEmpty().ifBlank { it.text } }
     val candidates = if (isLive) {
-        listOf(latestActivity?.detail, latestCommentary, statusDetail, latestActivity?.title, latestProcess)
+        listOf(latestCommentary, statusDetail, latestActivity?.detail, latestActivity?.title, latestProcess)
     } else {
         listOf(latestCommentary, latestProcess)
     }
@@ -1806,8 +1808,22 @@ private fun MessageBubble(
     token: String,
     fontSizeSp: Float,
     compact: Boolean,
+    onRetry: () -> Unit,
+    onDiscard: () -> Unit,
 ) {
     val isUser = message.role == "user"
+    val isFailed = isUser && message.deliveryState == "failed"
+    val isSending = isUser && message.deliveryState == "sending"
+    val bubbleColor = when {
+        isFailed -> MaterialTheme.colorScheme.errorContainer
+        isUser -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.surface
+    }
+    val bubbleContentColor = when {
+        isFailed -> MaterialTheme.colorScheme.onErrorContainer
+        isUser -> MaterialTheme.colorScheme.onPrimary
+        else -> MaterialTheme.colorScheme.onSurface
+    }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
@@ -1820,8 +1836,7 @@ private fun MessageBubble(
                 bottomEnd = if (isUser) 5.dp else 18.dp,
             ),
             colors = CardDefaults.cardColors(
-                containerColor = if (isUser) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.surface,
+                containerColor = bubbleColor,
             ),
             elevation = CardDefaults.cardElevation(defaultElevation = if (isUser) 0.dp else 1.dp),
             modifier = Modifier.fillMaxWidth(if (compact) 0.97f else 0.92f),
@@ -1835,12 +1850,8 @@ private fun MessageBubble(
                 if (message.text.isNotBlank()) {
                     MarkdownText(
                         markdown = message.text,
-                        color = if (isUser) {
-                            MaterialTheme.colorScheme.onPrimary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
-                        linkColor = if (isUser) {
+                        color = bubbleContentColor,
+                        linkColor = if (isUser && !isFailed) {
                             MaterialTheme.colorScheme.primaryContainer
                         } else {
                             MaterialTheme.colorScheme.primary
@@ -1852,6 +1863,30 @@ private fun MessageBubble(
                 if (message.attachments.isNotEmpty()) {
                     if (message.text.isNotBlank()) Spacer(Modifier.height(10.dp))
                     MediaGallery(message.attachments, endpoint, token)
+                }
+                if (isSending) {
+                    Text(
+                        "正在发送…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = bubbleContentColor.copy(alpha = 0.72f),
+                        modifier = Modifier.padding(top = 7.dp),
+                    )
+                }
+                if (isFailed) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 5.dp),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "未送达",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = onDiscard) { Text("删除") }
+                        TextButton(onClick = onRetry) { Text("重试") }
+                    }
                 }
             }
         }

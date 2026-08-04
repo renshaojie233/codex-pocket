@@ -11,17 +11,19 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { CodexClient } from "./codex-client.mjs";
 import { parseByteRange } from "./http-range.mjs";
+import { EventJournal } from "./event-journal.mjs";
 import { loadConfig } from "./config.mjs";
 import { mapModel, mapNotification, mapThreadDetail, mapThreadSummary } from "./mapper.mjs";
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.15.2";
+const VERSION = "0.15.3";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const codex = new CodexClient({ codexBin: config.codexBin });
 const loadedThreads = new Map();
 const pendingServerRequests = new Map();
 const sockets = new Set();
+const eventJournal = new EventJournal();
 const automationsRoot = resolve(homedir(), ".codex", "automations");
 const uploadRoot = resolve(moduleDir, "..", "data", "uploads");
 const DEFAULT_PERMISSION_PROFILE = ":danger-full-access";
@@ -351,7 +353,8 @@ function send(ws, payload) {
 }
 
 function broadcast(payload) {
-  for (const ws of sockets) send(ws, payload);
+  const outgoing = payload?.type === "event" ? eventJournal.record(payload) : payload;
+  for (const ws of sockets) send(ws, outgoing);
 }
 
 async function ensureThreadLoaded(threadId) {
@@ -513,6 +516,11 @@ async function handleRequest(message) {
   switch (message.method) {
     case "bridge.ping":
       return { now: Date.now() };
+    case "events.replay":
+      return eventJournal.replay({
+        instanceId: params.serverInstanceId,
+        afterSequence: Number(params.afterSequence) || 0,
+      });
     case "threads.list": {
       const result = await codex.request("thread/list", {
         limit: Math.min(Math.max(params.limit || 30, 1), 100),
@@ -698,6 +706,9 @@ async function handleRequest(message) {
         ...mapThreadDetail(threadResult.thread, {
           messageLimit,
           beforeMessageId: params.beforeMessageId,
+          clientMessageIds: Array.isArray(params.clientMessageIds)
+            ? params.clientMessageIds.slice(0, 20)
+            : [],
         }),
         settings,
         goal: mapGoal(goalResult.goal),
@@ -847,6 +858,8 @@ wss.on("connection", (ws) => {
     type: "hello",
     version: VERSION,
     serverTime: Date.now(),
+    serverInstanceId: eventJournal.instanceId,
+    eventSequence: eventJournal.sequence,
     capabilities: [
       "threads", "create", "archive", "directories", "history", "streaming",
       "interrupt", "steer", "models", "reasoning", "approvals", "media", "usage",

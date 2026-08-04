@@ -661,9 +661,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             if (cached.isNotEmpty()) _state.update { it.copy(messages = cached) }
             prefetchMessageImages(cached)
 
+            val pendingClientMessageIds = (cached + _state.value.messages)
+                .asSequence()
+                .filter { it.isLocalSubmission() }
+                .map { it.id }
+                .filter(String::isNotBlank)
+                .distinct()
+                .take(20)
+                .toList()
             val params = JSONObject()
                 .put("threadId", thread.id)
                 .put("messageLimit", MessageCacheStore.LATEST_SYNC_MESSAGE_COUNT)
+                .put("clientMessageIds", JSONArray(pendingClientMessageIds))
             client.request("thread.read", params) { result ->
                 onMain {
                     if (generation != threadLoadGeneration || _state.value.selectedThread?.id != thread.id) {
@@ -675,15 +684,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                             val settings = payload.optJSONObject("settings")
                             val threadPayload = payload.optJSONObject("thread")
                             val goal = parseGoal(payload.optJSONObject("goal"))
-                            val cachedIds = cached.mapTo(HashSet()) { it.id }
+                            val freshIds = fresh.mapTo(HashSet()) { it.id }
+                            val confirmedClientMessageIds = payload
+                                .optJSONArray("confirmedClientMessageIds")
+                                .toStringList()
+                                .toHashSet()
+                            val currentMessages = _state.value.messages
+                            val localSubmissions = (cached + currentMessages)
+                                .filter { it.isLocalSubmission() }
+                                .distinctBy { it.id }
+                            val newlyFailed = localSubmissions.any { message ->
+                                message.deliveryState == "sending" &&
+                                    message.id !in freshIds && message.id !in confirmedClientMessageIds
+                            }
+                            val unresolvedLocalSubmissions = localSubmissions
+                                .filter { it.id !in freshIds && it.id !in confirmedClientMessageIds }
+                                .map { message ->
+                                    if (message.deliveryState == "failed") message
+                                    else message.copy(deliveryState = "failed")
+                                }
+                            val cachedWithoutLocalSubmissions = cached.filterNot { it.isLocalSubmission() }
+                            val cachedIds = cachedWithoutLocalSubmissions.mapTo(HashSet()) { it.id }
                             val liveMessages = _state.value.messages.filter { message ->
-                                message.isStreaming || message.turnId == "pending" || message.id !in cachedIds
+                                !message.isLocalSubmission() && message.id !in freshIds &&
+                                    (message.isStreaming || message.id !in cachedIds)
                             }
                             val mergedMessages = mergeMessageWindows(
                                 MessageCacheStore.MAX_MESSAGES_PER_THREAD,
-                                cached,
+                                cachedWithoutLocalSubmissions,
                                 fresh,
                                 liveMessages,
+                                unresolvedLocalSubmissions,
                             )
                             _state.update { state ->
                                 val model = settings?.optString("model").orEmpty()
@@ -714,6 +745,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                                     goal = goal,
                                     hasOlderMessages = payload.optBoolean("hasOlderMessages"),
                                     isLoadingOlderMessages = false,
+                                    error = if (newlyFailed) {
+                                        "有一条消息没有送达 Mac，已标记为发送失败，可以点击重试。"
+                                    } else {
+                                        state.error
+                                    },
                                 )
                             }
                             scheduleMessageCache(thread.id, mergedMessages)
@@ -829,6 +865,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         text: String,
         images: List<PendingImage>,
         steering: Boolean,
+        clearComposer: Boolean = true,
     ) {
         val thread = current.selectedThread ?: return
         val expectedTurnId = current.activeTurnId
@@ -843,6 +880,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             role = "user",
             text = text,
             kind = "userMessage",
+            deliveryState = "sending",
             attachments = images.map { image ->
                 MediaAttachment(
                     id = image.id,
@@ -856,8 +894,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         )
         _state.update {
             it.copy(
-                input = "",
-                pendingImages = emptyList(),
+                input = if (clearComposer) "" else it.input,
+                pendingImages = if (clearComposer) emptyList() else it.pendingImages,
                 messages = it.messages + localMessage,
                 isSending = true,
                 isUploadingImages = images.isNotEmpty(),
@@ -888,7 +926,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                     )
                 }
             }.getOrElse { error ->
-                restoreFailedSubmission(thread.id, clientMessageId, text, images, steering)
+                restoreFailedSubmission(thread.id, clientMessageId, steering)
                 fail(error.message ?: "图片上传失败")
                 return@launch
             }
@@ -934,9 +972,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                         onSuccess = { payload ->
                             if (_state.value.selectedThread?.id == thread.id) {
                                 _state.update {
+                                    val turnId = payload.optString("turnId").ifBlank { it.activeTurnId }
                                     it.copy(
+                                        messages = it.messages.map { message ->
+                                            if (message.id == clientMessageId) {
+                                                message.copy(
+                                                    turnId = turnId ?: message.turnId,
+                                                    deliveryState = null,
+                                                )
+                                            } else {
+                                                message
+                                            }
+                                        },
                                         isUploadingImages = false,
-                                        activeTurnId = payload.optString("turnId").ifBlank { it.activeTurnId },
+                                        activeTurnId = turnId,
                                         currentStatus = if (steering) "正在按新指令调整…" else "正在思考…",
                                         statusDetail = if (steering) "引导消息已同步到当前回合"
                                         else "Codex 已接收任务",
@@ -945,7 +994,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                             }
                         },
                         onFailure = { error ->
-                            restoreFailedSubmission(thread.id, clientMessageId, text, images, steering)
+                            restoreFailedSubmission(thread.id, clientMessageId, steering)
                             fail(error.message ?: if (steering) "无法引导当前任务" else "发送失败")
                         },
                     )
@@ -957,19 +1006,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     private fun restoreFailedSubmission(
         threadId: String,
         clientMessageId: String,
-        text: String,
-        images: List<PendingImage>,
         steering: Boolean,
     ) {
         if (_state.value.selectedThread?.id != threadId) return
         _state.update { state ->
             state.copy(
-                input = state.input.ifBlank { text },
-                pendingImages = (images + state.pendingImages).distinctBy { it.uri }.take(MAX_IMAGES_PER_MESSAGE),
-                messages = state.messages.filterNot { it.id == clientMessageId },
+                messages = state.messages.map { message ->
+                    if (message.id == clientMessageId) message.copy(deliveryState = "failed") else message
+                },
                 isUploadingImages = false,
                 isSending = if (steering) state.isSending else false,
             )
+        }
+        cacheCurrentMessages()
+    }
+
+    fun retryFailedMessage(messageId: String) {
+        val current = _state.value
+        val message = current.messages.firstOrNull {
+            it.id == messageId && it.deliveryState == "failed"
+        } ?: return
+        val images = message.attachments.filter { it.kind == "image" }.map { attachment ->
+            PendingImage(
+                id = attachment.id,
+                uri = attachment.source,
+                name = attachment.name,
+                mimeType = attachment.mimeType.ifBlank { "image/jpeg" },
+                sizeBytes = null,
+            )
+        }
+        _state.update { state ->
+            state.copy(messages = state.messages.filterNot { it.id == messageId }, error = null)
+        }
+        submitUserMessage(
+            _state.value,
+            message.text,
+            images,
+            steering = _state.value.isSending,
+            clearComposer = false,
+        )
+    }
+
+    fun discardFailedMessage(messageId: String) {
+        _state.update { state ->
+            state.copy(messages = state.messages.filterNot {
+                it.id == messageId && it.deliveryState == "failed"
+            })
         }
         cacheCurrentMessages()
     }
@@ -1672,6 +1754,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             command = item.optString("command").ifBlank { null },
             status = item.optString("status").ifBlank { null },
             attachments = attachments,
+            deliveryState = item.optString("deliveryState").ifBlank { null },
         )
     }
 
@@ -1707,6 +1790,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         val array = this@toStringList ?: return@buildList
         for (index in 0 until array.length()) add(array.optString(index))
     }
+
+    private fun ChatMessage.isLocalSubmission(): Boolean =
+        role == "user" && (deliveryState != null || turnId == "pending")
 
     private fun JSONObject.optNullableLong(name: String): Long? =
         if (has(name) && !isNull(name)) optLong(name) else null

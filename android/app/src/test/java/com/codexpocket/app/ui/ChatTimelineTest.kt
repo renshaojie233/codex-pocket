@@ -1,6 +1,7 @@
 package com.codexpocket.app.ui
 
 import com.codexpocket.app.model.ChatMessage
+import com.codexpocket.app.model.ActivityEntry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -57,6 +58,18 @@ class ChatTimelineTest {
         assertEquals(1, timeline.size)
         assertTrue(timeline.single() is TimelineProcess)
         assertEquals("process-turn-1", timeline.single().key)
+    }
+
+    @Test
+    fun `live process preview prefers the newest commentary over an old tool detail`() {
+        val preview = processProgressPreview(
+            messages = listOf(message("最新进度", phase = "commentary")),
+            activities = listOf(ActivityEntry("old-tool", "旧命令", detail = "旧工具输出")),
+            statusDetail = "旧状态",
+            isLive = true,
+        )
+
+        assertEquals("最新进度", preview)
     }
 
     private fun message(

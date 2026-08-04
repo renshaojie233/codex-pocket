@@ -133,6 +133,32 @@ test("pages backward before the oldest visible message", () => {
   assert.equal(detail.cursorFound, true);
 });
 
+test("confirms optimistic client message ids outside the returned message window", () => {
+  const detail = mapThreadDetail({
+    id: "thread-receipts",
+    preview: "Receipts",
+    turns: [{
+      id: "turn-receipts",
+      items: [
+        {
+          id: "server-old",
+          clientId: "client-confirmed",
+          type: "userMessage",
+          content: [{ type: "text", text: "confirmed" }],
+        },
+        ...[1, 2, 3].map((number) => ({
+          id: `latest-${number}`,
+          type: "agentMessage",
+          text: `Latest ${number}`,
+        })),
+      ],
+    }],
+  }, { messageLimit: 2, clientMessageIds: ["client-confirmed", "client-missing"] });
+
+  assert.deepEqual(detail.messages.map((message) => message.id), ["latest-2", "latest-3"]);
+  assert.deepEqual(detail.confirmedClientMessageIds, ["client-confirmed"]);
+});
+
 test("maps selectable models and reasoning efforts", () => {
   assert.deepEqual(
     mapModel({

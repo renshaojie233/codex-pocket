@@ -366,6 +366,11 @@ export function mapThreadDetail(thread, options = {}) {
   const windowEnd = cursorFound ? cursorIndex : messages.length;
   const windowStart = hasLimit ? Math.max(0, windowEnd - requestedLimit) : 0;
   const limitedMessages = cursorFound ? messages.slice(windowStart, windowEnd) : [];
+  const requestedClientMessageIds = new Set(
+    Array.isArray(options.clientMessageIds)
+      ? options.clientMessageIds.filter((id) => typeof id === "string" && id)
+      : [],
+  );
   return {
     thread: mapThreadSummary(thread),
     messages: limitedMessages,
@@ -376,6 +381,9 @@ export function mapThreadDetail(thread, options = {}) {
     hasOlderMessages: cursorFound && windowStart > 0,
     hasNewerMessages: cursorFound && windowEnd < messages.length,
     activeTurnId: (thread.turns || []).findLast((turn) => turn.status === "inProgress")?.id || null,
+    confirmedClientMessageIds: messages
+      .filter((message) => message.role === "user" && requestedClientMessageIds.has(message.id))
+      .map((message) => message.id),
   };
 }
 

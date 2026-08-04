@@ -62,6 +62,7 @@ data class ChatMessage(
     val status: String? = null,
     val attachments: List<MediaAttachment> = emptyList(),
     val isStreaming: Boolean = false,
+    val deliveryState: String? = null,
 )
 
 data class MediaAttachment(

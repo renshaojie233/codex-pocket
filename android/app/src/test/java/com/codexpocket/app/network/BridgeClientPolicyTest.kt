@@ -10,6 +10,7 @@ class BridgeClientPolicyTest {
         assertTrue(isRetryableBridgeMethod("threads.list"))
         assertTrue(isRetryableBridgeMethod("thread.read"))
         assertTrue(isRetryableBridgeMethod("account.status"))
+        assertTrue(isRetryableBridgeMethod("events.replay"))
     }
 
     @Test

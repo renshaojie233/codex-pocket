@@ -156,6 +156,7 @@ class MessageCacheStore(cacheRoot: File) {
             .put("phase", message.phase)
             .put("command", message.command)
             .put("status", message.status)
+            .put("deliveryState", message.deliveryState)
             .put("attachments", attachments)
     }
 
@@ -196,6 +197,7 @@ class MessageCacheStore(cacheRoot: File) {
             status = item.optString("status").ifBlank { null },
             attachments = attachments,
             isStreaming = false,
+            deliveryState = item.optString("deliveryState").ifBlank { null },
         )
     }
 

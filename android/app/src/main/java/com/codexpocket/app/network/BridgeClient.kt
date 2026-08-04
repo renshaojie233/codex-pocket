@@ -44,6 +44,7 @@ class BridgeClient(context: Context, private val listener: Listener) {
     )
 
     private val callbacks = ConcurrentHashMap<String, PendingRequest>()
+    private val requestTimeouts = ConcurrentHashMap<String, Runnable>()
     private val reconnectHandler = Handler(Looper.getMainLooper())
     private val connectivityManager = context.applicationContext
         .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -60,6 +61,8 @@ class BridgeClient(context: Context, private val listener: Listener) {
     private var endpoint: String = ""
     private var token: String = ""
     private var reconnectAttempt = 0
+    private var serverInstanceId = ""
+    private var lastEventSequence = 0L
     @Volatile
     private var generation = 0
     @Volatile
@@ -133,10 +136,12 @@ class BridgeClient(context: Context, private val listener: Listener) {
             callback = callback,
         )
         callbacks[id] = pending
+        scheduleRequestTimeout(id, pending)
         if (socket?.send(envelope) != true) {
             if (shouldReconnect && pending.retryable) {
                 pending.needsResend = true
             } else if (callbacks.remove(id, pending)) {
+                cancelRequestTimeout(id)
                 callback(Result.failure(IllegalStateException("连接尚未就绪")))
             }
         }
@@ -250,6 +255,28 @@ class BridgeClient(context: Context, private val listener: Listener) {
         networkReconnectRunnable = null
     }
 
+    private fun scheduleRequestTimeout(id: String, pending: PendingRequest) {
+        cancelRequestTimeout(id)
+        val timeoutMillis = if (pending.retryable) READ_REQUEST_TIMEOUT_MILLIS
+        else MUTATION_ACK_TIMEOUT_MILLIS
+        val runnable = Runnable {
+            if (callbacks[id] !== pending) return@Runnable
+            requestTimeouts.remove(id)
+            if (pending.retryable && shouldReconnect) {
+                pending.needsResend = true
+                socket?.cancel()
+            } else if (callbacks.remove(id, pending)) {
+                pending.callback(Result.failure(IllegalStateException("发送确认超时，消息可能没有送达")))
+            }
+        }
+        requestTimeouts[id] = runnable
+        reconnectHandler.postDelayed(runnable, timeoutMillis)
+    }
+
+    private fun cancelRequestTimeout(id: String) {
+        requestTimeouts.remove(id)?.let(reconnectHandler::removeCallbacks)
+    }
+
     private inner class SocketListener(private val connectionGeneration: Int) : WebSocketListener() {
         private var terminalHandled = false
 
@@ -260,18 +287,9 @@ class BridgeClient(context: Context, private val listener: Listener) {
             try {
                 val message = JSONObject(text)
                 when (message.optString("type")) {
-                    "hello" -> {
-                        cancelHelloTimeout()
-                        reconnectAttempt = 0
-                        cancelReconnect()
-                        resendPending(webSocket)
-                        listener.onConnected()
-                    }
+                    "hello" -> handleHello(webSocket, message)
                     "response" -> handleResponse(message)
-                    "event" -> listener.onEvent(
-                        message.optString("event"),
-                        message.optJSONObject("data") ?: JSONObject(),
-                    )
+                    "event" -> dispatchEvent(message)
                 }
             } catch (error: Exception) {
                 listener.onError("消息解析失败：${error.message}")
@@ -301,11 +319,58 @@ class BridgeClient(context: Context, private val listener: Listener) {
     }
 
     private fun resendPending(webSocket: WebSocket) {
-        callbacks.values.forEach { pending ->
+        callbacks.forEach { (id, pending) ->
             if (pending.retryable && pending.needsResend && webSocket.send(pending.envelope)) {
                 pending.needsResend = false
+                scheduleRequestTimeout(id, pending)
             }
         }
+    }
+
+    private fun handleHello(webSocket: WebSocket, message: JSONObject) {
+        cancelHelloTimeout()
+        reconnectAttempt = 0
+        cancelReconnect()
+        resendPending(webSocket)
+        val nextServerInstanceId = message.optString("serverInstanceId")
+        val serverEventSequence = message.optLong("eventSequence")
+        val canReplay = serverInstanceId.isNotBlank() && serverInstanceId == nextServerInstanceId &&
+            lastEventSequence > 0L && serverEventSequence > lastEventSequence
+        if (serverInstanceId != nextServerInstanceId) {
+            serverInstanceId = nextServerInstanceId
+            lastEventSequence = 0L
+        }
+        if (!canReplay) {
+            listener.onConnected()
+            return
+        }
+        request(
+            "events.replay",
+            JSONObject()
+                .put("serverInstanceId", serverInstanceId)
+                .put("afterSequence", lastEventSequence),
+        ) { result ->
+            result.onSuccess { payload ->
+                val events = payload.optJSONArray("events")
+                if (events != null) {
+                    for (index in 0 until events.length()) {
+                        events.optJSONObject(index)?.let(::dispatchEvent)
+                    }
+                }
+                lastEventSequence = maxOf(lastEventSequence, payload.optLong("latestSequence"))
+            }
+            listener.onConnected()
+        }
+    }
+
+    private fun dispatchEvent(message: JSONObject) {
+        val sequence = message.optLong("sequence")
+        if (sequence > 0L && sequence <= lastEventSequence) return
+        if (sequence > 0L) lastEventSequence = sequence
+        listener.onEvent(
+            message.optString("event"),
+            message.optJSONObject("data") ?: JSONObject(),
+        )
     }
 
     private fun networkCapabilitySignature(capabilities: NetworkCapabilities): String = buildString {
@@ -319,6 +384,7 @@ class BridgeClient(context: Context, private val listener: Listener) {
     private fun handleResponse(message: JSONObject) {
         val id = message.optString("id")
         val callback = callbacks.remove(id)?.callback ?: return
+        cancelRequestTimeout(id)
         if (message.optBoolean("ok")) {
             callback(Result.success(message.optJSONObject("result") ?: JSONObject()))
         } else {
@@ -327,7 +393,10 @@ class BridgeClient(context: Context, private val listener: Listener) {
     }
 
     private fun failPending(message: String) {
-        val pending = callbacks.values.map { it.callback }
+        val pending = callbacks.entries.map { (id, pending) ->
+            cancelRequestTimeout(id)
+            pending.callback
+        }
         callbacks.clear()
         pending.forEach { callback ->
             callback(Result.failure(IllegalStateException(message)))
@@ -336,6 +405,7 @@ class BridgeClient(context: Context, private val listener: Listener) {
 
     private fun preserveRetryablePending(message: String) {
         callbacks.entries.forEach { (id, pending) ->
+            cancelRequestTimeout(id)
             if (pending.retryable) {
                 pending.needsResend = true
             } else if (callbacks.remove(id, pending)) {
@@ -360,8 +430,11 @@ internal fun isRetryableBridgeMethod(method: String): Boolean = method in setOf(
     "directories.list",
     "account.status",
     "automations.list",
+    "events.replay",
 )
 
 private const val NETWORK_HANDOVER_DEBOUNCE_MILLIS = 600L
 private const val NETWORK_RESTART_MIN_INTERVAL_MILLIS = 2_000L
 private const val HELLO_TIMEOUT_MILLIS = 12_000L
+private const val MUTATION_ACK_TIMEOUT_MILLIS = 20_000L
+private const val READ_REQUEST_TIMEOUT_MILLIS = 30_000L
