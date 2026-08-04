@@ -84,6 +84,8 @@ outputs/codex-pocket-0.15.1.apk
 http://<Mac 的 Tailscale IPv4>:8787/download
 ```
 
+APK 接口支持 HTTP Range 与断点续传；移动网络中断后可直接在浏览器下载管理中继续。
+
 安装后，在首次连接页面填写：
 
 ```text

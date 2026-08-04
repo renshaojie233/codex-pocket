@@ -10,6 +10,7 @@ import { pipeline, Transform } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { CodexClient } from "./codex-client.mjs";
+import { parseByteRange } from "./http-range.mjs";
 import { loadConfig } from "./config.mjs";
 import { mapModel, mapNotification, mapThreadDetail, mapThreadSummary } from "./mapper.mjs";
 
@@ -281,18 +282,52 @@ const server = http.createServer((req, res) => {
     res.end(html);
     return;
   }
-  if (req.method === "GET" && req.url === "/download/codex-pocket.apk") {
+  if ((req.method === "GET" || req.method === "HEAD") && req.url === "/download/codex-pocket.apk") {
     if (!existsSync(apkPath)) {
       json(res, 404, { ok: false, error: "APK is not built yet" });
       return;
     }
-    const size = statSync(apkPath).size;
-    res.writeHead(200, {
+    const apkStats = statSync(apkPath);
+    const size = apkStats.size;
+    const etag = `"codex-pocket-${VERSION}-${size}-${Math.trunc(apkStats.mtimeMs)}"`;
+    const lastModified = apkStats.mtime.toUTCString();
+    const commonHeaders = {
       "content-type": "application/vnd.android.package-archive",
-      "content-length": size,
       "content-disposition": `attachment; filename="codex-pocket-${VERSION}.apk"`,
+      "accept-ranges": "bytes",
+      "etag": etag,
+      "last-modified": lastModified,
       "cache-control": "no-store",
-    });
+      "x-content-type-options": "nosniff",
+    };
+    const ifRange = req.headers["if-range"];
+    const requestedRange = !ifRange || ifRange === etag || ifRange === lastModified
+      ? parseByteRange(req.headers.range, size)
+      : null;
+    if (requestedRange === false) {
+      res.writeHead(416, { ...commonHeaders, "content-range": `bytes */${size}` });
+      res.end();
+      return;
+    }
+    if (requestedRange) {
+      const { start, end } = requestedRange;
+      res.writeHead(206, {
+        ...commonHeaders,
+        "content-length": end - start + 1,
+        "content-range": `bytes ${start}-${end}/${size}`,
+      });
+      if (req.method === "HEAD") {
+        res.end();
+        return;
+      }
+      createReadStream(apkPath, { start, end }).pipe(res);
+      return;
+    }
+    res.writeHead(200, { ...commonHeaders, "content-length": size });
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
     createReadStream(apkPath).pipe(res);
     return;
   }
