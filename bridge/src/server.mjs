@@ -1,11 +1,12 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import {
-  createReadStream, existsSync, readFileSync, readdirSync, realpathSync,
-  renameSync, statSync, writeFileSync,
+  createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync,
+  realpathSync, renameSync, statSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import http from "node:http";
 import { homedir } from "node:os";
-import { dirname, extname, isAbsolute, join, normalize, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, normalize, resolve, sep } from "node:path";
+import { pipeline, Transform } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { CodexClient } from "./codex-client.mjs";
@@ -14,15 +15,21 @@ import { mapModel, mapNotification, mapThreadDetail, mapThreadSummary } from "./
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.13.0";
+const VERSION = "0.14.0";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const codex = new CodexClient({ codexBin: config.codexBin });
 const loadedThreads = new Map();
 const pendingServerRequests = new Map();
 const sockets = new Set();
 const automationsRoot = resolve(homedir(), ".codex", "automations");
+const uploadRoot = resolve(moduleDir, "..", "data", "uploads");
 const DEFAULT_PERMISSION_PROFILE = ":danger-full-access";
 const DEFAULT_MESSAGE_LIMIT = 120;
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+const MAX_UPLOAD_FILES = 400;
+const MAX_UPLOAD_STORAGE_BYTES = 1024 * 1024 * 1024;
+
+mkdirSync(uploadRoot, { recursive: true });
 
 function permissionProfileFromSettings(settings) {
   const activeId = settings?.activePermissionProfile?.id;
@@ -77,6 +84,12 @@ const mediaContentTypes = new Map([
   [".webm", "video/webm"], [".mkv", "video/x-matroska"],
   [".mp3", "audio/mpeg"], [".m4a", "audio/mp4"], [".aac", "audio/aac"],
   [".wav", "audio/wav"], [".ogg", "audio/ogg"], [".flac", "audio/flac"],
+]);
+
+const uploadExtensions = new Map([
+  ["image/jpeg", ".jpg"], ["image/png", ".png"], ["image/webp", ".webp"],
+  ["image/gif", ".gif"], ["image/avif", ".avif"], ["image/heic", ".heic"],
+  ["image/heif", ".heif"], ["image/bmp", ".bmp"],
 ]);
 
 function serveMedia(req, res, url) {
@@ -147,6 +160,93 @@ function serveMedia(req, res, url) {
   createReadStream(resolvedPath).pipe(res);
 }
 
+function safeUploadName(encodedName, extension) {
+  let decoded = "image";
+  try {
+    decoded = Buffer.from(encodedName || "", "base64").toString("utf8") || "image";
+  } catch {
+    decoded = "image";
+  }
+  const withoutExtension = decoded.replace(/\.[^.]+$/, "");
+  const stem = withoutExtension
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{N}_.-]+/gu, "-")
+    .replace(/^[.-]+|[.-]+$/g, "")
+    .slice(0, 64) || "image";
+  return `${Date.now()}-${randomUUID()}-${stem}${extension}`;
+}
+
+function trimUploadedImages() {
+  const files = readdirSync(uploadRoot)
+    .map((name) => join(uploadRoot, name))
+    .filter((path) => {
+      try {
+        return statSync(path).isFile() && !path.endsWith(".part");
+      } catch {
+        return false;
+      }
+    })
+    .sort((left, right) => statSync(right).mtimeMs - statSync(left).mtimeMs);
+  let retainedBytes = 0;
+  files.forEach((path, index) => {
+    retainedBytes += statSync(path).size;
+    if (index >= MAX_UPLOAD_FILES || retainedBytes > MAX_UPLOAD_STORAGE_BYTES) {
+      try { unlinkSync(path); } catch { /* best-effort phone upload cache cleanup */ }
+    }
+  });
+}
+
+function handleImageUpload(req, res) {
+  const mimeType = String(req.headers["content-type"] || "").split(";", 1)[0].toLowerCase();
+  const extension = uploadExtensions.get(mimeType);
+  if (!extension) {
+    json(res, 415, { ok: false, error: "只支持常见图片格式" });
+    return;
+  }
+  const declaredSize = Number(req.headers["content-length"]);
+  if (Number.isFinite(declaredSize) && (declaredSize <= 0 || declaredSize > MAX_UPLOAD_BYTES)) {
+    json(res, 413, { ok: false, error: "单张图片不能超过 15 MB" });
+    return;
+  }
+
+  const fileName = safeUploadName(req.headers["x-file-name-base64"], extension);
+  const destination = join(uploadRoot, fileName);
+  const temporary = `${destination}.part`;
+  let received = 0;
+  const limiter = new Transform({
+    transform(chunk, encoding, callback) {
+      received += chunk.length;
+      if (received > MAX_UPLOAD_BYTES) {
+        const error = new Error("单张图片不能超过 15 MB");
+        error.code = "UPLOAD_TOO_LARGE";
+        callback(error);
+      } else {
+        callback(null, chunk);
+      }
+    },
+  });
+  pipeline(req, limiter, createWriteStream(temporary, { flags: "wx" }), (error) => {
+    if (error || received === 0) {
+      try { unlinkSync(temporary); } catch { /* no partial file to remove */ }
+      if (!res.headersSent) {
+        json(res, error?.code === "UPLOAD_TOO_LARGE" ? 413 : 400, {
+          ok: false,
+          error: error?.message || "图片内容为空",
+        });
+      }
+      return;
+    }
+    try {
+      renameSync(temporary, destination);
+      trimUploadedImages();
+      json(res, 201, { path: destination, name: fileName, mimeType, size: received });
+    } catch (writeError) {
+      try { unlinkSync(temporary); } catch { /* no partial file to remove */ }
+      json(res, 500, { ok: false, error: writeError.message || "无法保存图片" });
+    }
+  });
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://bridge.local");
   if (req.method === "GET" && url.pathname === "/health") {
@@ -161,6 +261,14 @@ const server = http.createServer((req, res) => {
   }
   if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/media") {
     serveMedia(req, res, url);
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/upload/image") {
+    if (!tokenMatches(req)) {
+      json(res, 401, { ok: false, error: "Unauthorized" });
+      return;
+    }
+    handleImageUpload(req, res);
     return;
   }
   if (req.method === "GET" && req.url === "/download") {
@@ -236,6 +344,29 @@ function collaborationMode(mode, model, effort) {
       developer_instructions: null,
     },
   };
+}
+
+function uploadedImageInputs(params) {
+  const rootPrefix = `${realpathSync(uploadRoot)}${sep}`;
+  return (Array.isArray(params.images) ? params.images : []).slice(0, 4).map((image) => {
+    if (!image || typeof image.path !== "string") throw new Error("图片参数无效");
+    const path = realpathSync(image.path);
+    const stats = statSync(path);
+    if (!path.startsWith(rootPrefix) || !stats.isFile() || !mediaContentTypes.has(extname(path).toLowerCase())) {
+      throw new Error("图片不在 Bridge 上传目录中");
+    }
+    return { type: "localImage", path };
+  });
+}
+
+function userTurnInput(params) {
+  const input = [];
+  if (typeof params.text === "string" && params.text.trim()) {
+    input.push({ type: "text", text: params.text, text_elements: [] });
+  }
+  input.push(...uploadedImageInputs(params));
+  if (input.length === 0) throw new Error("消息或图片不能为空");
+  return input;
 }
 
 function mapGoal(goal) {
@@ -529,7 +660,10 @@ async function handleRequest(message) {
         ? Math.min(200, Math.max(20, Math.trunc(requestedLimit)))
         : DEFAULT_MESSAGE_LIMIT;
       return {
-        ...mapThreadDetail(threadResult.thread, { messageLimit }),
+        ...mapThreadDetail(threadResult.thread, {
+          messageLimit,
+          beforeMessageId: params.beforeMessageId,
+        }),
         settings,
         goal: mapGoal(goalResult.goal),
       };
@@ -616,7 +750,7 @@ async function handleRequest(message) {
       const turnParams = {
         threadId: params.threadId,
         clientUserMessageId: params.clientMessageId || null,
-        input: [{ type: "text", text: params.text, text_elements: [] }],
+        input: userTurnInput(params),
         summary: "auto",
       };
       const permissionProfile = resolvePermissionProfile(params.permissionProfile);
@@ -648,7 +782,7 @@ async function handleRequest(message) {
         threadId: params.threadId,
         expectedTurnId: params.turnId,
         clientUserMessageId: params.clientMessageId || null,
-        input: [{ type: "text", text: params.text, text_elements: [] }],
+        input: userTurnInput(params),
       });
       return { turnId: result.turnId, steered: true };
     }

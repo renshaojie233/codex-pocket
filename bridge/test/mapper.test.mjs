@@ -78,6 +78,8 @@ test("flattens turn items into mobile messages", () => {
   assert.deepEqual(detail.messages.map((message) => message.role), ["user", "assistant"]);
   assert.equal(detail.totalMessageCount, 2);
   assert.equal(detail.hasOlderMessages, false);
+  assert.equal(detail.messageWindowStart, 0);
+  assert.equal(detail.messageWindowEnd, 2);
 });
 
 test("returns only the newest requested message window", () => {
@@ -99,6 +101,28 @@ test("returns only the newest requested message window", () => {
   assert.deepEqual(detail.messages.map((message) => message.id), ["message-3", "message-4"]);
   assert.equal(detail.totalMessageCount, 4);
   assert.equal(detail.hasOlderMessages, true);
+});
+
+test("pages backward before the oldest visible message", () => {
+  const detail = mapThreadDetail({
+    id: "thread-pages",
+    preview: "Pages",
+    turns: [{
+      id: "turn-pages",
+      items: [1, 2, 3, 4, 5].map((number) => ({
+        id: `message-${number}`,
+        type: "agentMessage",
+        text: `Message ${number}`,
+      })),
+    }],
+  }, { messageLimit: 2, beforeMessageId: "message-4" });
+
+  assert.deepEqual(detail.messages.map((message) => message.id), ["message-2", "message-3"]);
+  assert.equal(detail.messageWindowStart, 1);
+  assert.equal(detail.messageWindowEnd, 3);
+  assert.equal(detail.hasOlderMessages, true);
+  assert.equal(detail.hasNewerMessages, true);
+  assert.equal(detail.cursorFound, true);
 });
 
 test("maps selectable models and reasoning efforts", () => {

@@ -350,12 +350,25 @@ export function mapThreadDetail(thread, options = {}) {
   }
   const requestedLimit = Number(options.messageLimit);
   const hasLimit = Number.isInteger(requestedLimit) && requestedLimit > 0;
-  const limitedMessages = hasLimit ? messages.slice(-requestedLimit) : messages;
+  const beforeMessageId = typeof options.beforeMessageId === "string" && options.beforeMessageId
+    ? options.beforeMessageId
+    : null;
+  const cursorIndex = beforeMessageId
+    ? messages.findIndex((message) => message.id === beforeMessageId)
+    : messages.length;
+  const cursorFound = !beforeMessageId || cursorIndex >= 0;
+  const windowEnd = cursorFound ? cursorIndex : messages.length;
+  const windowStart = hasLimit ? Math.max(0, windowEnd - requestedLimit) : 0;
+  const limitedMessages = cursorFound ? messages.slice(windowStart, windowEnd) : [];
   return {
     thread: mapThreadSummary(thread),
     messages: limitedMessages,
     totalMessageCount: messages.length,
-    hasOlderMessages: limitedMessages.length < messages.length,
+    messageWindowStart: windowStart,
+    messageWindowEnd: windowEnd,
+    cursorFound,
+    hasOlderMessages: cursorFound && windowStart > 0,
+    hasNewerMessages: cursorFound && windowEnd < messages.length,
     activeTurnId: (thread.turns || []).findLast((turn) => turn.status === "inProgress")?.id || null,
   };
 }

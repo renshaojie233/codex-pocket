@@ -13,6 +13,11 @@ data class MessageCacheStats(
     val bytes: Long = 0,
 )
 
+data class MessageCachePage(
+    val messages: List<ChatMessage> = emptyList(),
+    val hasOlder: Boolean = false,
+)
+
 /**
  * A bounded, app-private cache. It is deliberately stored under cacheDir so
  * Android may reclaim it and it is never treated as the source of truth.
@@ -21,7 +26,23 @@ class MessageCacheStore(cacheRoot: File) {
     private val directory = File(cacheRoot, "message-history-v1")
 
     @Synchronized
-    fun read(threadId: String): List<ChatMessage> {
+    fun read(threadId: String): List<ChatMessage> =
+        readMessages(threadId).takeLast(INITIAL_CACHED_MESSAGES)
+
+    @Synchronized
+    fun readBefore(threadId: String, beforeMessageId: String, limit: Int): MessageCachePage {
+        if (beforeMessageId.isBlank() || limit <= 0) return MessageCachePage()
+        val messages = readMessages(threadId)
+        val end = messages.indexOfFirst { it.id == beforeMessageId }
+        if (end <= 0) return MessageCachePage()
+        val start = (end - limit).coerceAtLeast(0)
+        return MessageCachePage(
+            messages = messages.subList(start, end),
+            hasOlder = start > 0,
+        )
+    }
+
+    private fun readMessages(threadId: String): List<ChatMessage> {
         val file = fileFor(threadId)
         if (!file.isFile) return emptyList()
         return runCatching {
@@ -49,7 +70,12 @@ class MessageCacheStore(cacheRoot: File) {
             return stats()
         }
         directory.mkdirs()
-        val encoded = boundedMessages(messages)
+        val retainedMessages = mergeMessageWindows(
+            MAX_MESSAGES_PER_THREAD,
+            readMessages(threadId),
+            messages,
+        )
+        val encoded = boundedMessages(retainedMessages)
         if (encoded.length() == 0) {
             remove(threadId)
             return stats()
@@ -191,11 +217,12 @@ class MessageCacheStore(cacheRoot: File) {
 
     companion object {
         const val LATEST_SYNC_MESSAGE_COUNT = 120
-        const val MAX_MESSAGES_PER_THREAD = 240
-        const val MAX_CACHED_THREADS = 20
-        const val MAX_TOTAL_BYTES = 12L * 1024L * 1024L
-        private const val MAX_BYTES_PER_THREAD = 2 * 1024 * 1024
-        private const val MAX_CACHED_TEXT_CHARS = 200_000
+        const val INITIAL_CACHED_MESSAGES = 360
+        const val MAX_MESSAGES_PER_THREAD = 10_000
+        const val MAX_CACHED_THREADS = 200
+        const val MAX_TOTAL_BYTES = 128L * 1024L * 1024L
+        private const val MAX_BYTES_PER_THREAD = 32 * 1024 * 1024
+        private const val MAX_CACHED_TEXT_CHARS = 500_000
         private const val CACHE_VERSION = 1
         private const val EMPTY_DOCUMENT_BYTES = 64
         private const val CACHE_TRUNCATION_MARKER = "\n\n…（手机缓存已截断，联网同步后显示完整内容）…\n\n"

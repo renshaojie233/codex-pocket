@@ -1,11 +1,17 @@
 package com.codexpocket.app
 
 import android.app.Application
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.core.content.edit
+import coil.request.CachePolicy
+import coil.request.ImageRequest
 import com.codexpocket.app.cache.MessageCacheStore
 import com.codexpocket.app.cache.mergeMessageWindows
+import com.codexpocket.app.cache.MessageCacheStats
+import com.codexpocket.app.media.PocketMediaLoader
 import com.codexpocket.app.model.ActivityEntry
 import com.codexpocket.app.model.AccountStatus
 import com.codexpocket.app.model.AutomationSummary
@@ -16,6 +22,7 @@ import com.codexpocket.app.model.DirectoryEntry
 import com.codexpocket.app.model.MediaAttachment
 import com.codexpocket.app.model.ModelOption
 import com.codexpocket.app.model.PendingApproval
+import com.codexpocket.app.model.PendingImage
 import com.codexpocket.app.model.PermissionProfileOption
 import com.codexpocket.app.model.ReasoningEffortOption
 import com.codexpocket.app.model.ServiceTierOption
@@ -24,6 +31,7 @@ import com.codexpocket.app.model.ThreadSummary
 import com.codexpocket.app.model.UiState
 import com.codexpocket.app.model.UsageLimit
 import com.codexpocket.app.network.BridgeClient
+import com.codexpocket.app.network.ImageUploader
 import com.codexpocket.app.notification.TaskNotificationService
 import com.codexpocket.app.notification.TaskNotifications
 import java.util.UUID
@@ -43,8 +51,11 @@ import org.json.JSONObject
 class MainViewModel(application: Application) : AndroidViewModel(application), BridgeClient.Listener {
     private val preferences = application.getSharedPreferences("codex-pocket", 0)
     private val client = BridgeClient(this)
+    private val imageUploader = ImageUploader(application.contentResolver)
     private val messageCache = MessageCacheStore(application.cacheDir)
-    private val initialCacheStats = messageCache.stats()
+    private val initialCacheStats = messageCache.stats().let { stats ->
+        stats.copy(bytes = stats.bytes + PocketMediaLoader.sizeBytes(application))
+    }
     private val cacheWriteJobs = ConcurrentHashMap<String, Job>()
     private var threadLoadGeneration = 0L
     private val _state = MutableStateFlow(
@@ -82,6 +93,65 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     fun setEndpoint(value: String) = _state.update { it.copy(endpoint = value) }
     fun setToken(value: String) = _state.update { it.copy(token = value) }
     fun setInput(value: String) = _state.update { it.copy(input = value) }
+
+    fun addPendingImages(uriStrings: List<String>) {
+        val existing = _state.value.pendingImages
+        val remaining = MAX_IMAGES_PER_MESSAGE - existing.size
+        if (remaining <= 0) {
+            fail("每次最多发送 4 张图片")
+            return
+        }
+        val resolver = getApplication<Application>().contentResolver
+        var oversizedName: String? = null
+        val additions = uriStrings.distinct().take(remaining).mapNotNull { source ->
+            val uri = runCatching { Uri.parse(source) }.getOrNull() ?: return@mapNotNull null
+            val mimeType = resolver.getType(uri).orEmpty().ifBlank { "image/jpeg" }
+            if (!mimeType.startsWith("image/")) return@mapNotNull null
+            var displayName = "图片"
+            var sizeBytes: Long? = null
+            runCatching {
+                resolver.query(
+                    uri,
+                    arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                    null,
+                    null,
+                    null,
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                        if (nameIndex >= 0) displayName = cursor.getString(nameIndex) ?: displayName
+                        if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) sizeBytes = cursor.getLong(sizeIndex)
+                    }
+                }
+            }
+            if (sizeBytes != null && sizeBytes!! > MAX_IMAGE_BYTES) {
+                oversizedName = displayName
+                return@mapNotNull null
+            }
+            PendingImage(
+                id = UUID.randomUUID().toString(),
+                uri = source,
+                name = displayName,
+                mimeType = mimeType,
+                sizeBytes = sizeBytes,
+            )
+        }
+        _state.update { state ->
+            state.copy(
+                pendingImages = (state.pendingImages + additions)
+                    .distinctBy { it.uri }
+                    .take(MAX_IMAGES_PER_MESSAGE),
+                error = null,
+            )
+        }
+        oversizedName?.let { fail("$it 超过 15 MB，请压缩后再发送") }
+    }
+
+    fun removePendingImage(id: String) {
+        if (_state.value.isUploadingImages) return
+        _state.update { state -> state.copy(pendingImages = state.pendingImages.filterNot { it.id == id }) }
+    }
 
     fun setMessageFontSize(value: Float) {
         val resolved = value.coerceIn(12f, 20f)
@@ -328,6 +398,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 activities = emptyList(),
                 pendingApproval = null,
                 goal = null,
+                pendingImages = emptyList(),
+                isUploadingImages = false,
+                hasOlderMessages = false,
+                isLoadingOlderMessages = false,
             )
         }
     }
@@ -558,6 +632,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 activities = emptyList(),
                 pendingApproval = null,
                 goal = null,
+                pendingImages = emptyList(),
+                isUploadingImages = false,
+                hasOlderMessages = false,
+                isLoadingOlderMessages = false,
             )
         }
         viewModelScope.launch {
@@ -566,6 +644,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 return@launch
             }
             if (cached.isNotEmpty()) _state.update { it.copy(messages = cached) }
+            prefetchMessageImages(cached)
 
             val params = JSONObject()
                 .put("threadId", thread.id)
@@ -618,9 +697,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                                     currentPermissionProfile = settings?.optString("permissionProfile")
                                         ?.ifBlank { null },
                                     goal = goal,
+                                    hasOlderMessages = payload.optBoolean("hasOlderMessages"),
+                                    isLoadingOlderMessages = false,
                                 )
                             }
                             scheduleMessageCache(thread.id, mergedMessages)
+                            prefetchMessageImages(mergedMessages)
                         },
                         onFailure = { fail(it.message ?: "无法读取任务内容") },
                     )
@@ -646,134 +728,235 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 activities = emptyList(),
                 pendingApproval = null,
                 goal = null,
+                pendingImages = emptyList(),
+                isUploadingImages = false,
+                hasOlderMessages = false,
+                isLoadingOlderMessages = false,
             )
         }
         refreshThreads()
     }
 
-    fun sendMessage() {
+    fun loadOlderMessages() {
         val current = _state.value
         val thread = current.selectedThread ?: return
-        val text = current.input.trim()
-        if (text.isBlank()) return
-        if (current.isSending) {
-            steerCurrentTurn(current, text)
-            return
-        }
-        val clientMessageId = UUID.randomUUID().toString()
-        val localMessage = ChatMessage(
-            id = clientMessageId,
-            turnId = "pending",
-            role = "user",
-            text = text,
-            kind = "userMessage",
-        )
-        _state.update {
-            it.copy(
-                input = "",
-                messages = it.messages + localMessage,
-                isSending = true,
-                currentStatus = "正在提交任务…",
-                statusDetail = "等待 Codex 接收",
-                activities = listOf(ActivityEntry("turn-pending", "正在提交任务")),
-                pendingApproval = null,
-                error = null,
-            )
-        }
-        cacheCurrentMessages()
-        val params = JSONObject()
-            .put("threadId", thread.id)
-            .put("text", text)
-            .put("clientMessageId", clientMessageId)
-            .put("model", current.selectedModel)
-            .put("effort", current.selectedEffort)
-            .put("mode", current.selectedMode)
-            .put("fastMode", current.fastModeEnabled)
-            .put("permissionProfile", current.defaultPermissionProfile)
-        client.request("turn.start", params) { result ->
-            onMain {
-                result.fold(
-                    onSuccess = { payload ->
-                        _state.update {
-                            it.copy(
-                                activeTurnId = payload.optString("turnId"),
-                                currentStatus = "正在思考…",
-                                statusDetail = "Codex 已接收任务",
-                            )
-                        }
-                    },
-                    onFailure = { error ->
-                        _state.update { state ->
-                            state.copy(
-                                input = state.input.ifBlank { text },
-                                messages = state.messages.filterNot { it.id == clientMessageId },
-                                isSending = false,
-                            )
-                        }
-                        cacheCurrentMessages()
-                        fail(error.message ?: "发送失败")
-                    },
+        val beforeMessageId = current.messages.firstOrNull()?.id?.takeIf(String::isNotBlank) ?: return
+        if (!current.hasOlderMessages || current.isLoadingOlderMessages) return
+        _state.update { it.copy(isLoadingOlderMessages = true) }
+        viewModelScope.launch {
+            val cachedPage = withContext(Dispatchers.IO) {
+                messageCache.readBefore(
+                    thread.id,
+                    beforeMessageId,
+                    MessageCacheStore.LATEST_SYNC_MESSAGE_COUNT,
                 )
+            }
+            if (_state.value.selectedThread?.id != thread.id) return@launch
+            if (cachedPage.messages.isNotEmpty()) {
+                val merged = mergeMessageWindows(
+                    MessageCacheStore.MAX_MESSAGES_PER_THREAD,
+                    cachedPage.messages,
+                    _state.value.messages,
+                )
+                _state.update { it.copy(messages = merged, isLoadingOlderMessages = false) }
+                prefetchMessageImages(cachedPage.messages)
+                return@launch
+            }
+
+            client.request(
+                "thread.read",
+                JSONObject()
+                    .put("threadId", thread.id)
+                    .put("messageLimit", MessageCacheStore.LATEST_SYNC_MESSAGE_COUNT)
+                    .put("beforeMessageId", beforeMessageId),
+            ) { result ->
+                onMain {
+                    if (_state.value.selectedThread?.id != thread.id) return@onMain
+                    result.fold(
+                        onSuccess = { payload ->
+                            val older = parseMessages(payload.optJSONArray("messages") ?: JSONArray())
+                            val merged = mergeMessageWindows(
+                                MessageCacheStore.MAX_MESSAGES_PER_THREAD,
+                                older,
+                                _state.value.messages,
+                            )
+                            _state.update {
+                                it.copy(
+                                    messages = merged,
+                                    hasOlderMessages = payload.optBoolean("hasOlderMessages") &&
+                                        payload.optBoolean("cursorFound", true),
+                                    isLoadingOlderMessages = false,
+                                )
+                            }
+                            scheduleMessageCache(thread.id, merged)
+                            prefetchMessageImages(older)
+                        },
+                        onFailure = { error ->
+                            _state.update { it.copy(isLoadingOlderMessages = false) }
+                            fail(error.message ?: "无法读取更早消息")
+                        },
+                    )
+                }
             }
         }
     }
 
-    private fun steerCurrentTurn(current: UiState, text: String) {
+    fun sendMessage() {
+        val current = _state.value
+        val text = current.input.trim()
+        val images = current.pendingImages
+        if (current.isUploadingImages || (text.isBlank() && images.isEmpty())) return
+        submitUserMessage(current, text, images, steering = current.isSending)
+    }
+
+    private fun submitUserMessage(
+        current: UiState,
+        text: String,
+        images: List<PendingImage>,
+        steering: Boolean,
+    ) {
         val thread = current.selectedThread ?: return
-        val turnId = current.activeTurnId
-        if (turnId.isNullOrBlank()) {
+        val expectedTurnId = current.activeTurnId
+        if (steering && expectedTurnId.isNullOrBlank()) {
             fail("Codex 正在运行，但当前回合尚未同步完成，请稍后再发送引导")
             return
         }
         val clientMessageId = UUID.randomUUID().toString()
         val localMessage = ChatMessage(
             id = clientMessageId,
-            turnId = turnId,
+            turnId = expectedTurnId ?: "pending",
             role = "user",
             text = text,
             kind = "userMessage",
+            attachments = images.map { image ->
+                MediaAttachment(
+                    id = image.id,
+                    kind = "image",
+                    source = image.uri,
+                    name = image.name,
+                    mimeType = image.mimeType,
+                    isLocal = false,
+                )
+            },
         )
         _state.update {
             it.copy(
                 input = "",
+                pendingImages = emptyList(),
                 messages = it.messages + localMessage,
-                currentStatus = "已发送引导…",
-                statusDetail = "Codex 将在当前任务中调整方向",
+                isSending = true,
+                isUploadingImages = images.isNotEmpty(),
+                currentStatus = when {
+                    images.isNotEmpty() -> "正在上传图片…"
+                    steering -> "已发送引导…"
+                    else -> "正在提交任务…"
+                },
+                statusDetail = if (images.isNotEmpty()) "${images.size} 张图片将通过 Tailscale 发送"
+                else if (steering) "Codex 将在当前任务中调整方向" else "等待 Codex 接收",
+                activities = if (steering) it.activities
+                else listOf(ActivityEntry("turn-pending", "正在提交任务")),
+                pendingApproval = null,
                 error = null,
             )
         }
         cacheCurrentMessages()
-        client.request(
-            "turn.steer",
-            JSONObject()
+        viewModelScope.launch {
+            val uploaded = runCatching {
+                images.map { image ->
+                    imageUploader.upload(
+                        endpoint = current.endpoint,
+                        token = current.token,
+                        uri = Uri.parse(image.uri),
+                        displayName = image.name,
+                        mimeType = image.mimeType,
+                        sizeBytes = image.sizeBytes,
+                    )
+                }
+            }.getOrElse { error ->
+                restoreFailedSubmission(thread.id, clientMessageId, text, images, steering)
+                fail(error.message ?: "图片上传失败")
+                return@launch
+            }
+
+            if (_state.value.selectedThread?.id == thread.id) {
+                _state.update {
+                    it.copy(
+                        isUploadingImages = false,
+                        currentStatus = if (steering) "正在发送引导…" else "正在提交任务…",
+                        statusDetail = "等待 Codex 接收",
+                    )
+                }
+            }
+            val params = JSONObject()
                 .put("threadId", thread.id)
-                .put("turnId", turnId)
+                .put("text", text)
                 .put("clientMessageId", clientMessageId)
-                .put("text", text),
-        ) { result ->
-            onMain {
-                result.fold(
-                    onSuccess = {
-                        _state.update { state ->
-                            state.copy(
-                                currentStatus = "正在按新指令调整…",
-                                statusDetail = "引导消息已同步到当前回合",
-                            )
-                        }
-                    },
-                    onFailure = { error ->
-                        _state.update { state ->
-                            state.copy(
-                                input = state.input.ifBlank { text },
-                                messages = state.messages.filterNot { it.id == clientMessageId },
-                            )
-                        }
-                        cacheCurrentMessages()
-                        fail(error.message ?: "无法引导当前任务")
-                    },
-                )
+                .put("images", JSONArray().also { array ->
+                    uploaded.forEach { image ->
+                        array.put(
+                            JSONObject()
+                                .put("path", image.path)
+                                .put("name", image.name)
+                                .put("mimeType", image.mimeType),
+                        )
+                    }
+                })
+            val method = if (steering) {
+                params.put("turnId", expectedTurnId)
+                "turn.steer"
+            } else {
+                params
+                    .put("model", current.selectedModel)
+                    .put("effort", current.selectedEffort)
+                    .put("mode", current.selectedMode)
+                    .put("fastMode", current.fastModeEnabled)
+                    .put("permissionProfile", current.defaultPermissionProfile)
+                "turn.start"
+            }
+            client.request(method, params) { result ->
+                onMain {
+                    result.fold(
+                        onSuccess = { payload ->
+                            if (_state.value.selectedThread?.id == thread.id) {
+                                _state.update {
+                                    it.copy(
+                                        isUploadingImages = false,
+                                        activeTurnId = payload.optString("turnId").ifBlank { it.activeTurnId },
+                                        currentStatus = if (steering) "正在按新指令调整…" else "正在思考…",
+                                        statusDetail = if (steering) "引导消息已同步到当前回合"
+                                        else "Codex 已接收任务",
+                                    )
+                                }
+                            }
+                        },
+                        onFailure = { error ->
+                            restoreFailedSubmission(thread.id, clientMessageId, text, images, steering)
+                            fail(error.message ?: if (steering) "无法引导当前任务" else "发送失败")
+                        },
+                    )
+                }
             }
         }
+    }
+
+    private fun restoreFailedSubmission(
+        threadId: String,
+        clientMessageId: String,
+        text: String,
+        images: List<PendingImage>,
+        steering: Boolean,
+    ) {
+        if (_state.value.selectedThread?.id != threadId) return
+        _state.update { state ->
+            state.copy(
+                input = state.input.ifBlank { text },
+                pendingImages = (images + state.pendingImages).distinctBy { it.uri }.take(MAX_IMAGES_PER_MESSAGE),
+                messages = state.messages.filterNot { it.id == clientMessageId },
+                isUploadingImages = false,
+                isSending = if (steering) state.isSending else false,
+            )
+        }
+        cacheCurrentMessages()
     }
 
     fun loadAccountStatus() {
@@ -950,8 +1133,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         cacheWriteJobs.values.forEach { it.cancel() }
         cacheWriteJobs.clear()
         viewModelScope.launch(Dispatchers.IO) {
-            val stats = runCatching { messageCache.clear() }
-                .getOrElse { messageCache.stats() }
+            runCatching { PocketMediaLoader.clear(getApplication()) }
+            val stats = combinedCacheStats(
+                runCatching { messageCache.clear() }.getOrElse { messageCache.stats() },
+            )
+            _state.update {
+                it.copy(
+                    messageCacheThreadCount = stats.threadCount,
+                    messageCacheBytes = stats.bytes,
+                )
+            }
+        }
+    }
+
+    fun refreshCacheStats() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val stats = combinedCacheStats(messageCache.stats())
             _state.update {
                 it.copy(
                     messageCacheThreadCount = stats.threadCount,
@@ -977,8 +1174,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         cacheWriteJobs.remove(threadId)?.cancel()
         cacheWriteJobs[threadId] = viewModelScope.launch(Dispatchers.IO) {
             if (delayMillis > 0) delay(delayMillis)
-            val stats = runCatching { messageCache.write(threadId, snapshot) }
-                .getOrElse { messageCache.stats() }
+            val stats = combinedCacheStats(
+                runCatching { messageCache.write(threadId, snapshot) }
+                    .getOrElse { messageCache.stats() },
+            )
             _state.update {
                 it.copy(
                     messageCacheThreadCount = stats.threadCount,
@@ -991,8 +1190,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     private fun removeCachedThread(threadId: String) {
         cacheWriteJobs.remove(threadId)?.cancel()
         viewModelScope.launch(Dispatchers.IO) {
-            val stats = runCatching { messageCache.remove(threadId) }
-                .getOrElse { messageCache.stats() }
+            val stats = combinedCacheStats(
+                runCatching { messageCache.remove(threadId) }
+                    .getOrElse { messageCache.stats() },
+            )
             _state.update {
                 it.copy(
                     messageCacheThreadCount = stats.threadCount,
@@ -1000,6 +1201,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 )
             }
         }
+    }
+
+    private fun combinedCacheStats(messageStats: MessageCacheStats): MessageCacheStats =
+        messageStats.copy(bytes = messageStats.bytes + PocketMediaLoader.sizeBytes(getApplication()))
+
+    private fun prefetchMessageImages(messages: List<ChatMessage>) {
+        if (messages.isEmpty()) return
+        val current = _state.value
+        val loader = PocketMediaLoader.get(getApplication())
+        messages.asSequence()
+            .flatMap { it.attachments.asSequence() }
+            .filter { it.kind == "image" && it.source.isNotBlank() }
+            .distinctBy { it.source }
+            .forEach { attachment ->
+                val source = if (!attachment.isLocal) {
+                    attachment.source
+                } else {
+                    val bridge = Uri.parse(current.endpoint)
+                    Uri.Builder()
+                        .scheme(if (bridge.scheme == "wss") "https" else "http")
+                        .encodedAuthority(bridge.encodedAuthority)
+                        .path("/media")
+                        .appendQueryParameter("path", attachment.source)
+                        .appendQueryParameter("token", current.token)
+                        .build()
+                        .toString()
+                }
+                loader.enqueue(
+                    ImageRequest.Builder(getApplication<Application>())
+                        .data(source)
+                        .diskCachePolicy(CachePolicy.ENABLED)
+                        .memoryCachePolicy(CachePolicy.ENABLED)
+                        .build(),
+                )
+            }
     }
 
     fun clearError() = _state.update { it.copy(error = null) }
@@ -1298,6 +1534,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 state.copy(messages = messages)
             }
         }
+        prefetchMessageImages(listOf(parsed))
         cacheCurrentMessages()
     }
 
@@ -1463,5 +1700,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
 
     companion object {
         private const val CACHE_WRITE_DELAY_MILLIS = 650L
+        private const val MAX_IMAGES_PER_MESSAGE = 4
+        private const val MAX_IMAGE_BYTES = 15L * 1024L * 1024L
     }
 }

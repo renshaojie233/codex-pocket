@@ -72,6 +72,14 @@ data class MediaAttachment(
     val isLocal: Boolean = false,
 )
 
+data class PendingImage(
+    val id: String,
+    val uri: String,
+    val name: String,
+    val mimeType: String,
+    val sizeBytes: Long? = null,
+)
+
 data class ReasoningEffortOption(
     val id: String,
     val description: String,
@@ -182,4 +190,8 @@ data class UiState(
     val compactChatEnabled: Boolean = false,
     val messageCacheThreadCount: Int = 0,
     val messageCacheBytes: Long = 0,
+    val pendingImages: List<PendingImage> = emptyList(),
+    val isUploadingImages: Boolean = false,
+    val hasOlderMessages: Boolean = false,
+    val isLoadingOlderMessages: Boolean = false,
 )

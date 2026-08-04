@@ -49,6 +49,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AddPhotoAlternate
 import androidx.compose.material.icons.rounded.Archive
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
@@ -111,6 +112,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -123,6 +125,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -136,27 +139,30 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
-import coil.ImageLoader
 import coil.compose.AsyncImage
-import coil.decode.VideoFrameDecoder
 import coil.request.ImageRequest
 import coil.request.videoFrameMillis
 import com.codexpocket.app.MainViewModel
 import com.codexpocket.app.media.MediaSaver
+import com.codexpocket.app.media.PocketMediaLoader
 import com.codexpocket.app.model.ActivityEntry
 import com.codexpocket.app.model.ChatMessage
 import com.codexpocket.app.model.ConnectionState
 import com.codexpocket.app.model.MediaAttachment
+import com.codexpocket.app.model.PendingImage
 import com.codexpocket.app.model.ThreadSummary
 import com.codexpocket.app.model.UiState
 import io.noties.markwon.Markwon
+import io.noties.markwon.ext.latex.JLatexMathPlugin
 import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
 import io.noties.markwon.ext.tables.TablePlugin
 import io.noties.markwon.ext.tasklist.TaskListPlugin
+import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Composable
 fun CodexPocketApp(viewModel: MainViewModel) {
@@ -293,6 +299,7 @@ private fun ThreadsScreen(state: UiState, viewModel: MainViewModel, snackbar: Sn
                         viewModel.loadAccountStatus()
                         viewModel.loadAutomations()
                         viewModel.loadPermissionProfiles()
+                        viewModel.refreshCacheStats()
                     }) {
                         Icon(Icons.Rounded.Settings, "设置与用量")
                     }
@@ -831,7 +838,7 @@ private fun SettingsSheet(state: UiState, viewModel: MainViewModel, onDismiss: (
                     Column(Modifier.padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text("手机消息缓存", fontWeight = FontWeight.SemiBold)
+                                Text("手机本地缓存", fontWeight = FontWeight.SemiBold)
                                 Text(
                                     "${state.messageCacheThreadCount} 个任务 · ${formatCacheSize(state.messageCacheBytes)}",
                                     style = MaterialTheme.typography.bodySmall,
@@ -840,7 +847,7 @@ private fun SettingsSheet(state: UiState, viewModel: MainViewModel, onDismiss: (
                             }
                             OutlinedButton(
                                 onClick = viewModel::clearMessageCache,
-                                enabled = state.messageCacheThreadCount > 0,
+                                enabled = state.messageCacheBytes > 0,
                             ) {
                                 Icon(Icons.Rounded.DeleteOutline, null, modifier = Modifier.size(17.dp))
                                 Spacer(Modifier.width(5.dp))
@@ -848,7 +855,7 @@ private fun SettingsSheet(state: UiState, viewModel: MainViewModel, onDismiss: (
                             }
                         }
                         Text(
-                            "打开时先显示手机缓存，再同步 Mac 最近 120 条消息。每个任务最多保留 240 条，整体最多 20 个任务或 12 MB；超出后自动清理最早缓存，不会删除 Mac 上的任何记录。",
+                            "打开时先显示手机缓存，再同步 Mac 最近 120 条；继续向上翻会自动加载更早内容。消息与图片合计最多 1 GB，超出后自动清理最早缓存，不会删除 Mac 上的任何记录。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 10.dp),
@@ -1346,6 +1353,22 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
         previousContentCount = contentCount
     }
 
+    LaunchedEffect(
+        thread.id,
+        state.hasOlderMessages,
+        state.isLoadingOlderMessages,
+        hasPositionedInitially,
+    ) {
+        if (!hasPositionedInitially || !state.hasOlderMessages || state.isLoadingOlderMessages) {
+            return@LaunchedEffect
+        }
+        snapshotFlow { listState.firstVisibleItemIndex }
+            .distinctUntilChanged()
+            .collect { firstVisible ->
+                if (firstVisible <= 2) viewModel.loadOlderMessages()
+            }
+    }
+
     Scaffold(
         modifier = Modifier.imePadding(),
         containerColor = MaterialTheme.colorScheme.background,
@@ -1453,6 +1476,11 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
                             )
                         }
                     }
+                }
+                if (state.isLoadingOlderMessages) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter),
+                    )
                 }
                 if (showJumpToLatest) {
                     FilledIconButton(
@@ -1872,11 +1900,7 @@ private fun MediaVideoPreview(
     onLongClick: () -> Unit,
 ) {
     val context = LocalContext.current
-    val videoImageLoader = remember(context) {
-        ImageLoader.Builder(context)
-            .components { add(VideoFrameDecoder.Factory()) }
-            .build()
-    }
+    val mediaImageLoader = remember(context) { PocketMediaLoader.get(context) }
     Box(
         Modifier.fillMaxWidth().aspectRatio(16f / 9f)
             .clip(RoundedCornerShape(14.dp))
@@ -1891,7 +1915,7 @@ private fun MediaVideoPreview(
                     .crossfade(true)
                     .build()
             },
-            imageLoader = videoImageLoader,
+            imageLoader = mediaImageLoader,
             contentDescription = attachment.name,
             contentScale = ContentScale.Fit,
             modifier = Modifier.fillMaxSize(),
@@ -1918,6 +1942,7 @@ private fun MediaImage(
     onLongClick: () -> Unit,
 ) {
     val context = LocalContext.current
+    val mediaImageLoader = remember(context) { PocketMediaLoader.get(context) }
     AsyncImage(
         model = remember(source) {
             ImageRequest.Builder(context)
@@ -1925,6 +1950,7 @@ private fun MediaImage(
                 .crossfade(true)
                 .build()
         },
+        imageLoader = mediaImageLoader,
         contentDescription = attachment.name,
         contentScale = ContentScale.Fit,
         modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp, max = 360.dp)
@@ -1980,6 +2006,7 @@ private fun ImagePreviewDialog(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
+    val mediaImageLoader = remember(context) { PocketMediaLoader.get(context) }
     var scale by remember(source) { mutableStateOf(1f) }
     var offset by remember(source) { mutableStateOf(Offset.Zero) }
     var canvasSize by remember(source) { mutableStateOf(IntSize.Zero) }
@@ -2012,6 +2039,7 @@ private fun ImagePreviewDialog(
                 model = remember(source) {
                     ImageRequest.Builder(context).data(source).crossfade(true).build()
                 },
+                imageLoader = mediaImageLoader,
                 contentDescription = attachment.name,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier.fillMaxSize()
@@ -2189,15 +2217,24 @@ private fun MarkdownText(
     compact: Boolean,
 ) {
     val context = LocalContext.current
-    val markwon = remember(context) {
+    val textColor = color.toArgb()
+    val latexTextSizePx = with(LocalDensity.current) { fontSizeSp.sp.toPx() }
+    val markwon = remember(context, latexTextSizePx, textColor) {
         Markwon.builder(context)
             .usePlugin(StrikethroughPlugin.create())
             .usePlugin(TablePlugin.create(context))
             .usePlugin(TaskListPlugin.create(context))
+            .usePlugin(MarkwonInlineParserPlugin.create())
+            .usePlugin(
+                JLatexMathPlugin.create(latexTextSizePx) { builder ->
+                    builder.inlinesEnabled(true)
+                    builder.theme().textColor(textColor)
+                },
+            )
             .build()
     }
-    val textColor = color.toArgb()
     val resolvedLinkColor = linkColor.toArgb()
+    val normalizedMarkdown = remember(markdown) { normalizeLatexForMarkwon(markdown) }
     AndroidView(
         factory = { viewContext ->
             TextView(viewContext).apply {
@@ -2214,7 +2251,7 @@ private fun MarkdownText(
             textView.setLinkTextColor(resolvedLinkColor)
             textView.textSize = fontSizeSp
             textView.setLineSpacing(0f, if (compact) 1.02f else 1.08f)
-            markwon.setMarkdown(textView, markdown)
+            markwon.setMarkdown(textView, normalizedMarkdown)
         },
         modifier = Modifier.fillMaxWidth(),
     )
@@ -2225,6 +2262,11 @@ private fun Composer(state: UiState, viewModel: MainViewModel) {
     var showModeSheet by remember { mutableStateOf(false) }
     var showGoalEditor by remember { mutableStateOf(false) }
     var confirmClearGoal by remember { mutableStateOf(false) }
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetMultipleContents(),
+    ) { uris ->
+        viewModel.addPendingImages(uris.map(Uri::toString))
+    }
     Column(
         Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
             .navigationBarsPadding(),
@@ -2234,7 +2276,7 @@ private fun Composer(state: UiState, viewModel: MainViewModel) {
             GoalStatusBar(
                 state = state,
                 onEdit = { showGoalEditor = true },
-                onTogglePaused = { viewModel.setGoalPaused(goal.status != "paused") },
+                onTogglePaused = { viewModel.setGoalPaused(goal.status == "active") },
             )
         }
         ModelControls(
@@ -2243,15 +2285,43 @@ private fun Composer(state: UiState, viewModel: MainViewModel) {
             showModeButton = true,
             onModeClick = { showModeSheet = true },
         )
+        if (state.pendingImages.isNotEmpty()) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(state.pendingImages, key = { it.id }) { image ->
+                    PendingImagePreview(image, onRemove = { viewModel.removePendingImage(image.id) })
+                }
+            }
+        }
         Row(
             Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 10.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
+            IconButton(
+                onClick = { imagePicker.launch("image/*") },
+                enabled = !state.isUploadingImages && state.pendingImages.size < 4,
+                modifier = Modifier.size(50.dp),
+            ) {
+                if (state.isUploadingImages) {
+                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Rounded.AddPhotoAlternate, "选择图片")
+                }
+            }
+            Spacer(Modifier.width(5.dp))
             OutlinedTextField(
                 value = state.input,
                 onValueChange = viewModel::setInput,
                 placeholder = {
-                    Text(if (state.isSending) "输入引导，调整当前任务…" else "给 Codex 发送指令…")
+                    Text(
+                        when {
+                            state.isUploadingImages -> "正在上传图片…"
+                            state.isSending -> "输入引导，调整当前任务…"
+                            else -> "给 Codex 发送指令…"
+                        },
+                    )
                 },
                 modifier = Modifier.weight(1f),
                 minLines = 1,
@@ -2259,7 +2329,7 @@ private fun Composer(state: UiState, viewModel: MainViewModel) {
                 shape = RoundedCornerShape(20.dp),
             )
             Spacer(Modifier.width(9.dp))
-            if (state.isSending) {
+            if (state.isSending && !state.isUploadingImages) {
                 FilledIconButton(
                     onClick = viewModel::interrupt,
                     modifier = Modifier.size(50.dp),
@@ -2274,7 +2344,8 @@ private fun Composer(state: UiState, viewModel: MainViewModel) {
             }
             FilledIconButton(
                 onClick = viewModel::sendMessage,
-                enabled = state.input.isNotBlank(),
+                enabled = !state.isUploadingImages &&
+                    (state.input.isNotBlank() || state.pendingImages.isNotEmpty()),
                 modifier = Modifier.size(50.dp),
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary),
             ) {
@@ -2326,6 +2397,39 @@ private fun Composer(state: UiState, viewModel: MainViewModel) {
                 }) { Text("清除") }
             },
         )
+    }
+}
+
+@Composable
+private fun PendingImagePreview(image: PendingImage, onRemove: () -> Unit) {
+    val context = LocalContext.current
+    val mediaImageLoader = remember(context) { PocketMediaLoader.get(context) }
+    Box(
+        Modifier.size(72.dp).clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        AsyncImage(
+            model = Uri.parse(image.uri),
+            imageLoader = mediaImageLoader,
+            contentDescription = image.name,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.68f),
+            modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(24.dp)
+                .clickable(onClick = onRemove),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Rounded.Close,
+                    "移除图片",
+                    tint = Color.White,
+                    modifier = Modifier.size(15.dp),
+                )
+            }
+        }
     }
 }
 
@@ -2424,12 +2528,13 @@ private fun GoalStatusBar(
             }
             IconButton(
                 onClick = onTogglePaused,
-                enabled = !state.isModeUpdating && goal.status in listOf("active", "paused"),
+                enabled = !state.isModeUpdating && goal.status in listOf("active", "paused", "blocked"),
                 modifier = Modifier.size(38.dp),
             ) {
                 Icon(
-                    if (goal.status == "paused") Icons.Rounded.PlayArrow else Icons.Rounded.Pause,
-                    if (goal.status == "paused") "继续 Goal" else "暂停 Goal",
+                    if (goal.status == "active") Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                    if (goal.status == "blocked") "恢复目标"
+                    else if (goal.status == "paused") "继续 Goal" else "暂停 Goal",
                     modifier = Modifier.size(20.dp),
                 )
             }
