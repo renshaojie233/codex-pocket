@@ -17,7 +17,7 @@ import { mapModel, mapNotification, mapThreadDetail, mapThreadSummary } from "./
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.15.9";
+const VERSION = "0.15.10";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const codex = new CodexClient({ codexBin: config.codexBin });
 const loadedThreads = new Map();
@@ -520,6 +520,7 @@ async function handleRequest(message) {
       return eventJournal.replay({
         instanceId: params.serverInstanceId,
         afterSequence: Number(params.afterSequence) || 0,
+        maxEvents: Math.min(Math.max(Number(params.maxEvents) || 250, 1), 500),
       });
     case "threads.list": {
       const result = await codex.request("thread/list", {

@@ -344,11 +344,17 @@ class BridgeClient(context: Context, private val listener: Listener) {
             listener.onConnected()
             return
         }
+        // The socket is usable as soon as the Bridge hello arrives. Do not
+        // keep the UI disabled while missed streaming events are replayed over
+        // a slow cellular DERP path; MainViewModel immediately refreshes the
+        // current thread snapshot and replay continues in the background.
+        listener.onConnected()
         request(
             "events.replay",
             JSONObject()
                 .put("serverInstanceId", serverInstanceId)
-                .put("afterSequence", lastEventSequence),
+                .put("afterSequence", lastEventSequence)
+                .put("maxEvents", MAX_REPLAY_EVENTS),
         ) { result ->
             result.onSuccess { payload ->
                 val events = payload.optJSONArray("events")
@@ -359,7 +365,6 @@ class BridgeClient(context: Context, private val listener: Listener) {
                 }
                 lastEventSequence = maxOf(lastEventSequence, payload.optLong("latestSequence"))
             }
-            listener.onConnected()
         }
     }
 
@@ -438,3 +443,4 @@ private const val NETWORK_RESTART_MIN_INTERVAL_MILLIS = 2_000L
 private const val HELLO_TIMEOUT_MILLIS = 12_000L
 private const val MUTATION_ACK_TIMEOUT_MILLIS = 20_000L
 private const val READ_REQUEST_TIMEOUT_MILLIS = 30_000L
+private const val MAX_REPLAY_EVENTS = 250

@@ -33,3 +33,15 @@ test("skips bulky tool deltas while advancing the replay cursor", () => {
   assert.equal(replay.latestSequence, 2);
   assert.deepEqual(replay.events, [completed]);
 });
+
+test("uses a fresh snapshot instead of returning an oversized replay", () => {
+  const journal = new EventJournal({ instanceId: "bridge-d", limit: 10 });
+  for (let index = 0; index < 5; index += 1) {
+    journal.record({ type: "event", event: "agent.delta", data: { delta: String(index) } });
+  }
+
+  const replay = journal.replay({ instanceId: "bridge-d", afterSequence: 0, maxEvents: 3 });
+  assert.equal(replay.truncated, true);
+  assert.equal(replay.latestSequence, 5);
+  assert.deepEqual(replay.events, []);
+});
