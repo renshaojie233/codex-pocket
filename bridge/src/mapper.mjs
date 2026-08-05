@@ -9,7 +9,35 @@ const mediaExtensions = {
   image: new Set(["jpg", "jpeg", "png", "gif", "webp", "avif", "heic", "heif", "bmp"]),
   video: new Set(["mp4", "m4v", "mov", "webm", "mkv"]),
   audio: new Set(["mp3", "m4a", "aac", "wav", "ogg", "flac"]),
+  file: new Set([
+    "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "csv",
+    "txt", "md", "rtf", "json", "xml", "yaml", "yml", "toml",
+    "zip", "7z", "rar", "tar", "gz",
+    "py", "js", "mjs", "ts", "tsx", "jsx", "kt", "java", "swift",
+    "go", "rs", "c", "cc", "cpp", "h", "hpp", "sh", "zsh", "sql", "tex",
+  ]),
 };
+
+const fileMimeTypes = new Map([
+  ["pdf", "application/pdf"],
+  ["doc", "application/msword"],
+  ["docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  ["ppt", "application/vnd.ms-powerpoint"],
+  ["pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  ["xls", "application/vnd.ms-excel"],
+  ["xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  ["csv", "text/csv"],
+  ["txt", "text/plain"],
+  ["md", "text/markdown"],
+  ["rtf", "application/rtf"],
+  ["json", "application/json"],
+  ["xml", "application/xml"],
+  ["zip", "application/zip"],
+  ["7z", "application/x-7z-compressed"],
+  ["rar", "application/vnd.rar"],
+  ["tar", "application/x-tar"],
+  ["gz", "application/gzip"],
+]);
 
 function sourceExtension(source = "") {
   const clean = source.split(/[?#]/, 1)[0].toLowerCase();
@@ -45,7 +73,7 @@ function mediaAttachment(source, options = {}) {
     kind,
     source,
     name: mediaName(source, options.name),
-    mimeType: options.mimeType || "",
+    mimeType: options.mimeType || fileMimeTypes.get(sourceExtension(source)) || "",
     isLocal: options.isLocal ?? (source.startsWith("/") || source.startsWith("file://")),
   };
 }

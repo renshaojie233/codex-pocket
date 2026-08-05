@@ -61,6 +61,37 @@ test("maps image and video media for the mobile renderer", () => {
   assert.deepEqual(assistant.attachments.map((attachment) => attachment.kind), ["video", "image"]);
 });
 
+test("maps Mac document links as downloadable file attachments", () => {
+  const assistant = mapItem({
+    id: "a-files",
+    type: "agentMessage",
+    text: [
+      "[演示文稿](</Users/test/Project/季度 汇报.pptx>)",
+      "[说明书](/Users/test/Project/manual.docx)",
+      "[报告](/Users/test/Project/report.pdf)",
+    ].join("\n"),
+  }, "turn-files");
+
+  assert.deepEqual(
+    assistant.attachments.map(({ kind, name, mimeType, isLocal }) => ({ kind, name, mimeType, isLocal })),
+    [
+      {
+        kind: "file",
+        name: "演示文稿",
+        mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        isLocal: true,
+      },
+      {
+        kind: "file",
+        name: "说明书",
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        isLocal: true,
+      },
+      { kind: "file", name: "报告", mimeType: "application/pdf", isLocal: true },
+    ],
+  );
+});
+
 test("flattens turn items into mobile messages", () => {
   const detail = mapThreadDetail({
     id: "thread-1",

@@ -72,6 +72,7 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Edit
@@ -2361,13 +2362,26 @@ private fun MediaGallery(attachments: List<MediaAttachment>, endpoint: String, t
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var opened by remember { mutableStateOf<MediaAttachment?>(null) }
-    var pendingSave by remember { mutableStateOf<Pair<MediaAttachment, String>?>(null) }
-    val saveMedia: (MediaAttachment, String) -> Unit = { attachment, source ->
+    var pendingSave by remember { mutableStateOf<Triple<MediaAttachment, String, Boolean>?>(null) }
+    val saveMedia: (MediaAttachment, String, Boolean) -> Unit = { attachment, source, openAfterSave ->
         scope.launch {
-            Toast.makeText(context, "正在保存…", Toast.LENGTH_SHORT).show()
-            runCatching { MediaSaver.save(context, attachment, source) }
-                .onSuccess { name ->
-                    Toast.makeText(context, "已保存到相册：$name", Toast.LENGTH_LONG).show()
+            Toast.makeText(
+                context,
+                if (openAfterSave) "正在下载文件…" else "正在保存…",
+                Toast.LENGTH_SHORT,
+            ).show()
+            runCatching { MediaSaver.saveDetailed(context, attachment, source) }
+                .onSuccess { saved ->
+                    if (openAfterSave && MediaSaver.open(context, saved)) {
+                        Toast.makeText(context, "已下载：${saved.name}", Toast.LENGTH_SHORT).show()
+                    } else {
+                        val destination = if (attachment.kind == "file") "下载/Codex Pocket" else "相册"
+                        Toast.makeText(
+                            context,
+                            "已保存到$destination：${saved.name}",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
                 }
                 .onFailure { error ->
                     Toast.makeText(context, "保存失败：${error.message ?: "未知错误"}", Toast.LENGTH_LONG).show()
@@ -2380,7 +2394,7 @@ private fun MediaGallery(attachments: List<MediaAttachment>, endpoint: String, t
         val media = pendingSave
         pendingSave = null
         if (granted && media != null) {
-            saveMedia(media.first, media.second)
+            saveMedia(media.first, media.second, media.third)
         } else if (!granted) {
             Toast.makeText(context, "没有存储权限，无法保存媒体", Toast.LENGTH_LONG).show()
         }
@@ -2391,10 +2405,22 @@ private fun MediaGallery(attachments: List<MediaAttachment>, endpoint: String, t
             ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
             PackageManager.PERMISSION_GRANTED
         ) {
-            pendingSave = attachment to source
+            pendingSave = Triple(attachment, source, false)
             storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         } else {
-            saveMedia(attachment, source)
+            saveMedia(attachment, source, false)
+        }
+    }
+    val requestOpen: (MediaAttachment, String) -> Unit = { attachment, source ->
+        if (
+            Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingSave = Triple(attachment, source, true)
+            storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            saveMedia(attachment, source, true)
         }
     }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2420,6 +2446,12 @@ private fun MediaGallery(attachments: List<MediaAttachment>, endpoint: String, t
                     label = "播放音频",
                     icon = { Icon(Icons.Rounded.Audiotrack, null) },
                     onClick = { opened = attachment },
+                )
+                "file" -> MediaFileCard(
+                    attachment = attachment,
+                    label = "下载并打开",
+                    icon = { Icon(Icons.Rounded.Description, null) },
+                    onClick = { requestOpen(attachment, source) },
                 )
             }
         }
@@ -2546,7 +2578,11 @@ private fun MediaFileCard(
                 )
                 Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             }
-            Icon(Icons.Rounded.PlayArrow, null, tint = MaterialTheme.colorScheme.primary)
+            Icon(
+                if (attachment.kind == "file") Icons.Rounded.Download else Icons.Rounded.PlayArrow,
+                null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
         }
     }
 }

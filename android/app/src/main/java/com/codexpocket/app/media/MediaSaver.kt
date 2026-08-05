@@ -2,12 +2,15 @@ package com.codexpocket.app.media
 
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.webkit.MimeTypeMap
+import androidx.annotation.RequiresApi
+import androidx.core.content.FileProvider
 import com.codexpocket.app.model.MediaAttachment
 import java.io.File
 import java.util.Locale
@@ -19,7 +22,20 @@ import okhttp3.Request
 object MediaSaver {
     private val client = OkHttpClient()
 
+    data class SavedAttachment(
+        val name: String,
+        val uri: Uri,
+        val mimeType: String,
+    )
+
     suspend fun save(context: Context, attachment: MediaAttachment, source: String): String =
+        saveDetailed(context, attachment, source).name
+
+    suspend fun saveDetailed(
+        context: Context,
+        attachment: MediaAttachment,
+        source: String,
+    ): SavedAttachment =
         withContext(Dispatchers.IO) {
             val request = Request.Builder().url(source).build()
             client.newCall(request).execute().use { response ->
@@ -31,33 +47,49 @@ object MediaSaver {
                 }
                 val displayName = safeFileName(attachment.name, mimeType, attachment.kind)
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val savedUri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     saveWithMediaStore(context, attachment.kind, displayName, mimeType) { output ->
                         body.byteStream().use { input -> input.copyTo(output) }
                     }
                 } else {
-                    saveLegacy(context, attachment.kind, displayName, mimeType) { file ->
+                    val file = saveLegacy(context, attachment.kind, displayName, mimeType) { file ->
                         file.outputStream().use { output ->
                             body.byteStream().use { input -> input.copyTo(output) }
                         }
                     }
+                    FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.fileprovider",
+                        file,
+                    )
                 }
-                displayName
+                SavedAttachment(displayName, savedUri, mimeType)
             }
         }
 
+    fun open(context: Context, saved: SavedAttachment): Boolean = runCatching {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW)
+                .setDataAndType(saved.uri, saved.mimeType)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }.isSuccess
+
+    @RequiresApi(Build.VERSION_CODES.Q)
     private fun saveWithMediaStore(
         context: Context,
         kind: String,
         displayName: String,
         mimeType: String,
         write: (java.io.OutputStream) -> Unit,
-    ) {
+    ): Uri {
         val (collection, relativePath) = when (kind) {
             "video" -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI to
                 "${Environment.DIRECTORY_MOVIES}/Codex Pocket"
             "audio" -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI to
                 "${Environment.DIRECTORY_MUSIC}/Codex Pocket"
+            "file" -> MediaStore.Downloads.EXTERNAL_CONTENT_URI to
+                "${Environment.DIRECTORY_DOWNLOADS}/Codex Pocket"
             else -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI to
                 "${Environment.DIRECTORY_PICTURES}/Codex Pocket"
         }
@@ -81,6 +113,7 @@ object MediaSaver {
             resolver.delete(uri, null, null)
             throw error
         }
+        return uri
     }
 
     @Suppress("DEPRECATION")
@@ -90,10 +123,11 @@ object MediaSaver {
         displayName: String,
         mimeType: String,
         write: (File) -> Unit,
-    ) {
+    ): File {
         val directoryName = when (kind) {
             "video" -> Environment.DIRECTORY_MOVIES
             "audio" -> Environment.DIRECTORY_MUSIC
+            "file" -> Environment.DIRECTORY_DOWNLOADS
             else -> Environment.DIRECTORY_PICTURES
         }
         val directory = File(
@@ -109,6 +143,7 @@ object MediaSaver {
             arrayOf(mimeType),
             null,
         )
+        return file
     }
 
     private fun uniqueFile(directory: File, displayName: String): File {
@@ -135,6 +170,7 @@ object MediaSaver {
             ?: when (kind) {
                 "video" -> "mp4"
                 "audio" -> "m4a"
+                "file" -> "bin"
                 else -> "jpg"
             }
         return "$cleaned.${extension.lowercase(Locale.ROOT)}"
@@ -150,6 +186,7 @@ object MediaSaver {
     private fun defaultMime(kind: String): String = when (kind) {
         "video" -> "video/mp4"
         "audio" -> "audio/mp4"
+        "file" -> "application/octet-stream"
         else -> "image/jpeg"
     }
 }

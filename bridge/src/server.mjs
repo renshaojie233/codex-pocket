@@ -17,7 +17,7 @@ import { mapModel, mapNotification, mapThreadDetail, mapThreadSummary } from "./
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.15.11";
+const VERSION = "0.15.12";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const codex = new CodexClient({ codexBin: config.codexBin });
 const loadedThreads = new Map();
@@ -87,6 +87,29 @@ const mediaContentTypes = new Map([
   [".webm", "video/webm"], [".mkv", "video/x-matroska"],
   [".mp3", "audio/mpeg"], [".m4a", "audio/mp4"], [".aac", "audio/aac"],
   [".wav", "audio/wav"], [".ogg", "audio/ogg"], [".flac", "audio/flac"],
+  [".pdf", "application/pdf"], [".doc", "application/msword"],
+  [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  [".ppt", "application/vnd.ms-powerpoint"],
+  [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  [".xls", "application/vnd.ms-excel"],
+  [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  [".csv", "text/csv; charset=utf-8"], [".txt", "text/plain; charset=utf-8"],
+  [".md", "text/markdown; charset=utf-8"], [".rtf", "application/rtf"],
+  [".json", "application/json"], [".xml", "application/xml"],
+  [".yaml", "text/yaml; charset=utf-8"], [".yml", "text/yaml; charset=utf-8"],
+  [".toml", "text/plain; charset=utf-8"], [".zip", "application/zip"],
+  [".7z", "application/x-7z-compressed"], [".rar", "application/vnd.rar"],
+  [".tar", "application/x-tar"], [".gz", "application/gzip"],
+  [".py", "text/plain; charset=utf-8"], [".js", "text/javascript; charset=utf-8"],
+  [".mjs", "text/javascript; charset=utf-8"], [".ts", "text/plain; charset=utf-8"],
+  [".tsx", "text/plain; charset=utf-8"], [".jsx", "text/plain; charset=utf-8"],
+  [".kt", "text/plain; charset=utf-8"], [".java", "text/plain; charset=utf-8"],
+  [".swift", "text/plain; charset=utf-8"], [".go", "text/plain; charset=utf-8"],
+  [".rs", "text/plain; charset=utf-8"], [".c", "text/plain; charset=utf-8"],
+  [".cc", "text/plain; charset=utf-8"], [".cpp", "text/plain; charset=utf-8"],
+  [".h", "text/plain; charset=utf-8"], [".hpp", "text/plain; charset=utf-8"],
+  [".sh", "text/plain; charset=utf-8"], [".zsh", "text/plain; charset=utf-8"],
+  [".sql", "text/plain; charset=utf-8"], [".tex", "text/plain; charset=utf-8"],
 ]);
 
 const uploadExtensions = new Map([
@@ -133,6 +156,9 @@ function serveMedia(req, res, url) {
     "accept-ranges": "bytes",
     "cache-control": "private, max-age=300",
     "x-content-type-options": "nosniff",
+    ...(/^image\/|^video\/|^audio\//.test(contentType) ? {} : {
+      "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(resolvedPath.split(sep).at(-1))}`,
+    }),
   };
   const range = req.headers.range?.match(/^bytes=(\d*)-(\d*)$/);
   if (range) {
