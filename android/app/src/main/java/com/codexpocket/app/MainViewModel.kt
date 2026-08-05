@@ -1086,10 +1086,85 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                             }
                         },
                         onFailure = { error ->
-                            restoreFailedSubmission(thread.id, clientMessageId, steering)
-                            fail(error.message ?: if (steering) "无法引导当前任务" else "发送失败")
+                            reconcileSubmissionAfterUncertainFailure(
+                                threadId = thread.id,
+                                clientMessageId = clientMessageId,
+                                steering = steering,
+                                failureMessage = error.message
+                                    ?: if (steering) "无法引导当前任务" else "发送失败",
+                            )
                         },
                     )
+                }
+            }
+        }
+    }
+
+    private fun reconcileSubmissionAfterUncertainFailure(
+        threadId: String,
+        clientMessageId: String,
+        steering: Boolean,
+        failureMessage: String,
+        attempt: Int = 0,
+    ) {
+        if (_state.value.selectedThread?.id != threadId) return
+        _state.update { state ->
+            state.copy(
+                currentStatus = "正在确认消息是否送达…",
+                statusDetail = "网络回执丢失，正在向 Mac 校验",
+                error = null,
+            )
+        }
+        viewModelScope.launch {
+            delay(SUBMISSION_RECONCILE_DELAY_MILLIS)
+            if (_state.value.selectedThread?.id != threadId) return@launch
+            client.request(
+                "thread.read",
+                JSONObject()
+                    .put("threadId", threadId)
+                    .put("messageLimit", 1)
+                    .put("clientMessageIds", JSONArray().put(clientMessageId)),
+            ) { verification ->
+                onMain {
+                    if (_state.value.selectedThread?.id != threadId) return@onMain
+                    val payload = verification.getOrNull()
+                    val confirmed = payload
+                        ?.optJSONArray("confirmedClientMessageIds")
+                        .toStringList()
+                        .contains(clientMessageId)
+                    if (confirmed) {
+                        _state.update { state ->
+                            state.copy(
+                                messages = state.messages.map { message ->
+                                    if (message.id == clientMessageId) {
+                                        message.copy(
+                                            turnId = payload?.optString("activeTurnId")
+                                                ?.takeIf(String::isNotBlank) ?: message.turnId,
+                                            deliveryState = null,
+                                        )
+                                    } else {
+                                        message
+                                    }
+                                },
+                                isUploadingImages = false,
+                                currentStatus = if (steering) "正在按新指令调整…" else "正在思考…",
+                                statusDetail = "已从 Mac 确认消息送达",
+                                error = null,
+                            )
+                        }
+                        cacheCurrentMessages()
+                    } else if (verification.isSuccess && attempt + 1 < SUBMISSION_RECONCILE_ATTEMPTS) {
+                        reconcileSubmissionAfterUncertainFailure(
+                            threadId,
+                            clientMessageId,
+                            steering,
+                            failureMessage,
+                            attempt + 1,
+                        )
+                    } else {
+                        restoreFailedSubmission(threadId, clientMessageId, steering)
+                        fail(failureMessage)
+                    }
                 }
             }
         }
@@ -2023,6 +2098,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         private const val CACHE_WRITE_DELAY_MILLIS = 650L
         private const val ACTIVE_THREAD_SYNC_INTERVAL_MILLIS = 8_000L
         private const val COMPLETED_THREAD_SYNC_DELAY_MILLIS = 350L
+        private const val SUBMISSION_RECONCILE_DELAY_MILLIS = 1_000L
+        private const val SUBMISSION_RECONCILE_ATTEMPTS = 2
         private const val DISCARDED_LOCAL_MESSAGES_PREFERENCE = "discarded-local-message-ids"
         private const val MAX_DISCARDED_LOCAL_MESSAGES = 500
         private const val EXPANDED_PROCESS_GROUPS_PREFERENCE = "expanded-process-groups"

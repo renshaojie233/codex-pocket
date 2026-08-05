@@ -88,6 +88,24 @@ class MessageWindowsTest {
         assertEquals(listOf("/tmp/one.png", "/tmp/two.png"), merged.attachments.map { it.source })
     }
 
+    @Test
+    fun `authoritative user item clears a stale local failure badge`() {
+        val failed = ChatMessage(
+            id = "client-message",
+            turnId = "pending",
+            role = "user",
+            text = "cellular test",
+            kind = "userMessage",
+            deliveryState = "failed",
+        )
+        val delivered = failed.copy(turnId = "server-turn", deliveryState = null)
+
+        val merged = mergeMessageWindows(10, listOf(failed), listOf(delivered)).single()
+
+        assertEquals("server-turn", merged.turnId)
+        assertEquals(null, merged.deliveryState)
+    }
+
     private fun message(id: String, text: String) = ChatMessage(
         id = id,
         turnId = "turn-$id",

@@ -38,7 +38,16 @@ internal fun mergeChatMessages(older: ChatMessage, newer: ChatMessage): ChatMess
     status = newer.status ?: older.status,
     attachments = mergeAttachments(older.attachments, newer.attachments),
     isStreaming = newer.isStreaming,
-    deliveryState = newer.deliveryState ?: older.deliveryState,
+    // A server-backed user item has a real turn id and is authoritative proof
+    // that an optimistic mobile submission arrived. Never keep a stale local
+    // "sending" or "failed" badge after that item has synced from the Mac.
+    deliveryState = if (
+        newer.role == "user" && newer.turnId.isNotBlank() && newer.turnId != "pending"
+    ) {
+        newer.deliveryState
+    } else {
+        newer.deliveryState ?: older.deliveryState
+    },
 )
 
 private fun mergeAttachments(
