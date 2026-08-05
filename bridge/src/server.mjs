@@ -14,16 +14,18 @@ import { parseByteRange } from "./http-range.mjs";
 import { EventJournal } from "./event-journal.mjs";
 import { loadConfig } from "./config.mjs";
 import { mapModel, mapNotification, mapThreadDetail, mapThreadSummary } from "./mapper.mjs";
+import { MutationReceipts } from "./mutation-receipts.mjs";
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.15.12";
+const VERSION = "0.15.13";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const codex = new CodexClient({ codexBin: config.codexBin });
 const loadedThreads = new Map();
 const pendingServerRequests = new Map();
 const sockets = new Set();
 const eventJournal = new EventJournal();
+const mutationReceipts = new MutationReceipts();
 const automationsRoot = resolve(homedir(), ".codex", "automations");
 const uploadRoot = resolve(moduleDir, "..", "data", "uploads");
 const DEFAULT_PERMISSION_PROFILE = ":danger-full-access";
@@ -433,6 +435,12 @@ function userTurnInput(params) {
   return input;
 }
 
+function mutationReceiptKey(method, params) {
+  const clientMessageId = typeof params.clientMessageId === "string" ? params.clientMessageId : "";
+  if (!clientMessageId) return "";
+  return `${method}:${params.threadId || ""}:${clientMessageId}`;
+}
+
 function mapGoal(goal) {
   if (!goal) return null;
   return {
@@ -819,45 +827,49 @@ async function handleRequest(message) {
       return { cleared: true };
     }
     case "turn.start": {
-      const current = await ensureThreadLoaded(params.threadId);
-      const turnParams = {
-        threadId: params.threadId,
-        clientUserMessageId: params.clientMessageId || null,
-        input: userTurnInput(params),
-        summary: "auto",
-      };
-      const permissionProfile = resolvePermissionProfile(params.permissionProfile);
-      turnParams.permissions = permissionProfile;
-      turnParams.approvalPolicy = approvalPolicyForPermission(permissionProfile);
-      if (typeof params.model === "string" && params.model) turnParams.model = params.model;
-      if (typeof params.effort === "string" && params.effort) turnParams.effort = params.effort;
-      const mode = params.mode === "plan" ? "plan" : (current.mode || "default");
-      const model = turnParams.model || current.model;
-      const effort = turnParams.effort || current.effort;
-      if (model) turnParams.collaborationMode = collaborationMode(mode, model, effort);
-      if (typeof params.fastMode === "boolean") {
-        turnParams.serviceTier = params.fastMode ? "priority" : null;
-      }
-      const result = await codex.request("turn/start", turnParams);
-      loadedThreads.set(params.threadId, {
-        model: model || null,
-        effort: mode === "plan" ? "medium" : (effort || null),
-        serviceTier: params.fastMode === true ? "priority" : null,
-        mode,
-        permissionProfile,
-        approvalPolicy: turnParams.approvalPolicy,
+      return mutationReceipts.run(mutationReceiptKey("turn.start", params), async () => {
+        const current = await ensureThreadLoaded(params.threadId);
+        const turnParams = {
+          threadId: params.threadId,
+          clientUserMessageId: params.clientMessageId || null,
+          input: userTurnInput(params),
+          summary: "auto",
+        };
+        const permissionProfile = resolvePermissionProfile(params.permissionProfile);
+        turnParams.permissions = permissionProfile;
+        turnParams.approvalPolicy = approvalPolicyForPermission(permissionProfile);
+        if (typeof params.model === "string" && params.model) turnParams.model = params.model;
+        if (typeof params.effort === "string" && params.effort) turnParams.effort = params.effort;
+        const mode = params.mode === "plan" ? "plan" : (current.mode || "default");
+        const model = turnParams.model || current.model;
+        const effort = turnParams.effort || current.effort;
+        if (model) turnParams.collaborationMode = collaborationMode(mode, model, effort);
+        if (typeof params.fastMode === "boolean") {
+          turnParams.serviceTier = params.fastMode ? "priority" : null;
+        }
+        const result = await codex.request("turn/start", turnParams);
+        loadedThreads.set(params.threadId, {
+          model: model || null,
+          effort: mode === "plan" ? "medium" : (effort || null),
+          serviceTier: params.fastMode === true ? "priority" : null,
+          mode,
+          permissionProfile,
+          approvalPolicy: turnParams.approvalPolicy,
+        });
+        return { turnId: result.turn.id, status: result.turn.status };
       });
-      return { turnId: result.turn.id, status: result.turn.status };
     }
     case "turn.steer": {
-      if (!params.threadId || !params.turnId) throw new Error("当前没有可以引导的运行任务");
-      const result = await codex.request("turn/steer", {
-        threadId: params.threadId,
-        expectedTurnId: params.turnId,
-        clientUserMessageId: params.clientMessageId || null,
-        input: userTurnInput(params),
+      return mutationReceipts.run(mutationReceiptKey("turn.steer", params), async () => {
+        if (!params.threadId || !params.turnId) throw new Error("当前没有可以引导的运行任务");
+        const result = await codex.request("turn/steer", {
+          threadId: params.threadId,
+          expectedTurnId: params.turnId,
+          clientUserMessageId: params.clientMessageId || null,
+          input: userTurnInput(params),
+        });
+        return { turnId: result.turnId, steered: true };
       });
-      return { turnId: result.turnId, steered: true };
     }
     case "turn.interrupt": {
       await codex.request("turn/interrupt", {
@@ -929,7 +941,7 @@ const socketHeartbeat = setInterval(() => {
     ws.isAlive = false;
     ws.ping();
   }
-}, 30_000);
+}, 10_000);
 socketHeartbeat.unref();
 
 codex.on("notification", (message) => {

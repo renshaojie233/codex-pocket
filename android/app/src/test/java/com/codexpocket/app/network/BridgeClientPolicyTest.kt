@@ -14,9 +14,14 @@ class BridgeClientPolicyTest {
     }
 
     @Test
+    fun `retries only server deduplicated message mutations`() {
+        assertTrue(isRetryableBridgeMethod("turn.start"))
+        assertTrue(isRetryableBridgeMethod("turn.steer"))
+        assertTrue(requestTimeoutMillis("turn.start") < requestTimeoutMillis("thread.read"))
+    }
+
+    @Test
     fun `never automatically repeats mutating requests`() {
-        assertFalse(isRetryableBridgeMethod("turn.start"))
-        assertFalse(isRetryableBridgeMethod("turn.steer"))
         assertFalse(isRetryableBridgeMethod("thread.archive"))
     }
 

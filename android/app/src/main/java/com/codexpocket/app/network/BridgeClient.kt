@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -30,15 +31,17 @@ class BridgeClient(context: Context, private val listener: Listener) {
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        // A less aggressive heartbeat survives Xiaomi power scheduling and
-        // brief Tailscale handovers without declaring a healthy socket dead.
-        .pingInterval(45, TimeUnit.SECONDS)
+        // Detect a half-open socket quickly after Wi-Fi/cellular handovers.
+        // Requests are idempotent where retried, so reconnecting is safer than
+        // leaving the phone attached to a dead downlink for tens of seconds.
+        .pingInterval(10, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
     private data class PendingRequest(
         val envelope: String,
         val retryable: Boolean,
+        val timeoutMillis: Long,
         val callback: (Result<JSONObject>) -> Unit,
         @Volatile var needsResend: Boolean = false,
     )
@@ -133,6 +136,7 @@ class BridgeClient(context: Context, private val listener: Listener) {
         val pending = PendingRequest(
             envelope = envelope,
             retryable = isRetryableBridgeMethod(method),
+            timeoutMillis = requestTimeoutMillis(method),
             callback = callback,
         )
         callbacks[id] = pending
@@ -195,7 +199,20 @@ class BridgeClient(context: Context, private val listener: Listener) {
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
-        runCatching { connectivityManager.registerNetworkCallback(request, networkCallback) }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Unlike registerNetworkCallback, this follows the best
+                // physical (non-VPN) network. That matters on Xiaomi devices
+                // which keep Wi-Fi and cellular simultaneously available.
+                connectivityManager.registerBestMatchingNetworkCallback(
+                    request,
+                    networkCallback,
+                    reconnectHandler,
+                )
+            } else {
+                connectivityManager.registerNetworkCallback(request, networkCallback)
+            }
+        }
             .onSuccess { networkMonitorRegistered = true }
     }
 
@@ -257,8 +274,6 @@ class BridgeClient(context: Context, private val listener: Listener) {
 
     private fun scheduleRequestTimeout(id: String, pending: PendingRequest) {
         cancelRequestTimeout(id)
-        val timeoutMillis = if (pending.retryable) READ_REQUEST_TIMEOUT_MILLIS
-        else MUTATION_ACK_TIMEOUT_MILLIS
         val runnable = Runnable {
             if (callbacks[id] !== pending) return@Runnable
             requestTimeouts.remove(id)
@@ -270,7 +285,7 @@ class BridgeClient(context: Context, private val listener: Listener) {
             }
         }
         requestTimeouts[id] = runnable
-        reconnectHandler.postDelayed(runnable, timeoutMillis)
+        reconnectHandler.postDelayed(runnable, pending.timeoutMillis)
     }
 
     private fun cancelRequestTimeout(id: String) {
@@ -436,11 +451,21 @@ internal fun isRetryableBridgeMethod(method: String): Boolean = method in setOf(
     "account.status",
     "automations.list",
     "events.replay",
+    // The Bridge de-duplicates these mutations by clientMessageId, making a
+    // reconnect resend safe when the original acknowledgement was lost.
+    "turn.start",
+    "turn.steer",
 )
+
+internal fun requestTimeoutMillis(method: String): Long = when (method) {
+    "turn.start", "turn.steer" -> MUTATION_ACK_TIMEOUT_MILLIS
+    else -> if (isRetryableBridgeMethod(method)) READ_REQUEST_TIMEOUT_MILLIS
+    else MUTATION_ACK_TIMEOUT_MILLIS
+}
 
 private const val NETWORK_HANDOVER_DEBOUNCE_MILLIS = 600L
 private const val NETWORK_RESTART_MIN_INTERVAL_MILLIS = 2_000L
 private const val HELLO_TIMEOUT_MILLIS = 12_000L
-private const val MUTATION_ACK_TIMEOUT_MILLIS = 20_000L
+private const val MUTATION_ACK_TIMEOUT_MILLIS = 8_000L
 private const val READ_REQUEST_TIMEOUT_MILLIS = 30_000L
 private const val MAX_REPLAY_EVENTS = 250
