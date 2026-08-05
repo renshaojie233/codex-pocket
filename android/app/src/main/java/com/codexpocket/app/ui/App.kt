@@ -306,10 +306,21 @@ private fun ThreadsScreen(state: UiState, viewModel: MainViewModel, snackbar: Sn
                             } else {
                                 Color(0xFF36B37E)
                             }
-                            Box(Modifier.size(7.dp).clip(CircleShape).background(connectionColor))
+                            if (state.isLoading && !state.isReconnecting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(9.dp),
+                                    strokeWidth = 1.5.dp,
+                                )
+                            } else {
+                                Box(Modifier.size(7.dp).clip(CircleShape).background(connectionColor))
+                            }
                             Spacer(Modifier.width(6.dp))
                             Text(
-                                if (state.isReconnecting) "网络波动，正在恢复" else "Mac 已连接",
+                                when {
+                                    state.isReconnecting -> "网络波动，正在恢复"
+                                    state.isLoading -> "正在同步任务"
+                                    else -> "Mac 已连接"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (state.isReconnecting) Color(0xFFA56D08) else Color(0xFF258B62),
                             )
@@ -758,8 +769,8 @@ private fun SettingsSheet(state: UiState, viewModel: MainViewModel, onDismiss: (
                             Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                                 Text("任务完成提醒", fontWeight = FontWeight.SemiBold)
                                 Text(
-                                    if (state.completionNotificationsEnabled) "后台监听已开启"
-                                    else "横幅、提示音和震动均已关闭",
+                                    if (state.completionNotificationsEnabled) "完成后弹窗、响铃并震动"
+                                    else "提醒已关闭；消息仍会后台自动同步",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -769,13 +780,13 @@ private fun SettingsSheet(state: UiState, viewModel: MainViewModel, onDismiss: (
                                 onCheckedChange = setNotificationEnabled,
                             )
                         }
+                        Text(
+                            "持续同步会保留一条低调通知。若小米停止后台同步，请允许自启动，并把电池策略设为“无限制”。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 12.dp),
+                        )
                         if (state.completionNotificationsEnabled) {
-                            Text(
-                                "会保留一条低调的后台监听通知。若小米仍收不到，请允许自启动，并把电池策略设为“无限制”。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 12.dp),
-                            )
                             Row(
                                 Modifier.fillMaxWidth().padding(top = 12.dp),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1481,11 +1492,29 @@ private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: Snack
                     }
                 },
                 actions = {
-                    IconButton(
-                        onClick = { viewModel.openThread(thread) },
-                        enabled = !state.isSending && !state.isReconnecting,
-                    ) {
-                        Icon(Icons.Rounded.Refresh, "重新同步")
+                    if (state.isSyncing) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 1.8.dp,
+                            )
+                            Text(
+                                "同步中",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else {
+                        IconButton(
+                            onClick = { viewModel.openThread(thread) },
+                            enabled = !state.isSending && !state.isReconnecting,
+                        ) {
+                            Icon(Icons.Rounded.Refresh, "重新同步")
+                        }
                     }
                     Box {
                         IconButton(onClick = { threadMenuExpanded = true }) {

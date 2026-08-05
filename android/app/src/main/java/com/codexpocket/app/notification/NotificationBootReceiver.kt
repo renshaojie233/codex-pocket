@@ -9,10 +9,9 @@ class NotificationBootReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) {
             return
         }
-        val enabled = context.getSharedPreferences(TaskNotificationService.PREFERENCES_NAME, Context.MODE_PRIVATE)
-            .getBoolean(TaskNotificationService.ENABLED_PREFERENCE, false)
-        if (enabled) {
-            runCatching { TaskNotificationService.setEnabled(context, true) }
-        }
+        // Continuous cache synchronization is independent of sound/vibration.
+        // Restart it after a reboot or app upgrade so new Mac messages are
+        // already present when the user opens a task.
+        runCatching { TaskNotificationService.ensureRunning(context) }
     }
 }

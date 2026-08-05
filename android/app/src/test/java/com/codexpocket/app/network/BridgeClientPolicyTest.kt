@@ -31,4 +31,11 @@ class BridgeClientPolicyTest {
         assertFalse(shouldRestartForNetworkChange("wifi:true", "wifi:true", true))
         assertFalse(shouldRestartForNetworkChange("wifi:true", "cellular:true", false))
     }
+
+    @Test
+    fun `keeps network recovery retries quick during a handover`() {
+        assertTrue(reconnectDelaySeconds(0) <= 1)
+        assertTrue(reconnectDelaySeconds(4) <= 3)
+        assertTrue(reconnectDelaySeconds(100) <= 10)
+    }
 }

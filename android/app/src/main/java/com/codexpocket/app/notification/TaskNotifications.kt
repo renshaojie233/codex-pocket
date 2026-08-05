@@ -36,7 +36,7 @@ object TaskNotifications {
             "后台任务监听",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "保持与 Mac 的连接，以便任务完成时及时提醒"
+            description = "保持与 Mac 的连接并在后台自动同步任务消息"
             setSound(null, null)
             enableVibration(false)
             setShowBadge(false)
@@ -68,7 +68,7 @@ object TaskNotifications {
         createChannels(context)
         return NotificationCompat.Builder(context, LISTENER_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Codex Pocket 提醒已开启")
+            .setContentTitle("Codex Pocket 持续同步")
             .setContentText(status)
             .setContentIntent(openAppIntent(context, "listener"))
             .setOngoing(true)

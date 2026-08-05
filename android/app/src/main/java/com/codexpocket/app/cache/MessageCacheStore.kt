@@ -25,22 +25,24 @@ data class MessageCachePage(
 class MessageCacheStore(cacheRoot: File) {
     private val directory = File(cacheRoot, "message-history-v1")
 
-    @Synchronized
-    fun read(threadId: String): List<ChatMessage> =
+    fun read(threadId: String): List<ChatMessage> = synchronized(CACHE_LOCK) {
         readMessages(threadId).takeLast(INITIAL_CACHED_MESSAGES)
-
-    @Synchronized
-    fun readBefore(threadId: String, beforeMessageId: String, limit: Int): MessageCachePage {
-        if (beforeMessageId.isBlank() || limit <= 0) return MessageCachePage()
-        val messages = readMessages(threadId)
-        val end = messages.indexOfFirst { it.id == beforeMessageId }
-        if (end <= 0) return MessageCachePage()
-        val start = (end - limit).coerceAtLeast(0)
-        return MessageCachePage(
-            messages = messages.subList(start, end),
-            hasOlder = start > 0,
-        )
     }
+
+    fun readBefore(threadId: String, beforeMessageId: String, limit: Int): MessageCachePage =
+        synchronized(CACHE_LOCK) {
+            if (beforeMessageId.isBlank() || limit <= 0) {
+                return@synchronized MessageCachePage()
+            }
+            val messages = readMessages(threadId)
+            val end = messages.indexOfFirst { it.id == beforeMessageId }
+            if (end <= 0) return@synchronized MessageCachePage()
+            val start = (end - limit).coerceAtLeast(0)
+            MessageCachePage(
+                messages = messages.subList(start, end),
+                hasOlder = start > 0,
+            )
+        }
 
     private fun readMessages(threadId: String): List<ChatMessage> {
         val file = fileFor(threadId)
@@ -62,16 +64,15 @@ class MessageCacheStore(cacheRoot: File) {
         }
     }
 
-    @Synchronized
     fun write(
         threadId: String,
         messages: List<ChatMessage>,
         discardedLocalMessageIds: Set<String> = emptySet(),
-    ): MessageCacheStats {
-        if (threadId.isBlank()) return stats()
+    ): MessageCacheStats = synchronized(CACHE_LOCK) {
+        if (threadId.isBlank()) return@synchronized stats()
         if (messages.isEmpty()) {
             remove(threadId)
-            return stats()
+            return@synchronized stats()
         }
         directory.mkdirs()
         val retainedMessages = excludeDiscardedLocalMessages(
@@ -85,7 +86,7 @@ class MessageCacheStore(cacheRoot: File) {
         val encoded = boundedMessages(retainedMessages)
         if (encoded.length() == 0) {
             remove(threadId)
-            return stats()
+            return@synchronized stats()
         }
         val root = JSONObject()
             .put("version", CACHE_VERSION)
@@ -101,26 +102,23 @@ class MessageCacheStore(cacheRoot: File) {
         }
         destination.setLastModified(System.currentTimeMillis())
         trimGlobalBudget()
-        return stats()
+        stats()
     }
 
-    @Synchronized
-    fun remove(threadId: String): MessageCacheStats {
+    fun remove(threadId: String): MessageCacheStats = synchronized(CACHE_LOCK) {
         fileFor(threadId).delete()
-        return stats()
+        stats()
     }
 
-    @Synchronized
-    fun clear(): MessageCacheStats {
+    fun clear(): MessageCacheStats = synchronized(CACHE_LOCK) {
         directory.listFiles()?.forEach(File::delete)
         directory.delete()
-        return MessageCacheStats()
+        MessageCacheStats()
     }
 
-    @Synchronized
-    fun stats(): MessageCacheStats {
+    fun stats(): MessageCacheStats = synchronized(CACHE_LOCK) {
         val files = cacheFiles()
-        return MessageCacheStats(
+        MessageCacheStats(
             threadCount = files.size,
             bytes = files.sumOf(File::length),
         )
@@ -237,5 +235,6 @@ class MessageCacheStore(cacheRoot: File) {
         private const val CACHE_VERSION = 1
         private const val EMPTY_DOCUMENT_BYTES = 64
         private const val CACHE_TRUNCATION_MARKER = "\n\n…（手机缓存已截断，联网同步后显示完整内容）…\n\n"
+        private val CACHE_LOCK = Any()
     }
 }

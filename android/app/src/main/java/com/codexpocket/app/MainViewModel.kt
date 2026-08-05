@@ -32,6 +32,8 @@ import com.codexpocket.app.model.ThreadGoal
 import com.codexpocket.app.model.ThreadSummary
 import com.codexpocket.app.model.UiState
 import com.codexpocket.app.model.UsageLimit
+import com.codexpocket.app.model.parseChatMessages
+import com.codexpocket.app.model.parseChatMessage
 import com.codexpocket.app.network.BridgeClient
 import com.codexpocket.app.network.ImageUploader
 import com.codexpocket.app.notification.TaskNotificationService
@@ -103,9 +105,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
 
     init {
         if (_state.value.token.isNotBlank()) {
+            TaskNotificationService.ensureRunning(application)
             connect()
-        } else if (_state.value.completionNotificationsEnabled) {
-            TaskNotificationService.setEnabled(application, true)
         }
     }
 
@@ -442,15 +443,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         }
         _state.update { it.copy(connection = ConnectionState.Connecting, isReconnecting = false, error = null) }
         client.connect(endpoint, token)
-        if (_state.value.completionNotificationsEnabled) {
-            TaskNotificationService.setEnabled(getApplication(), true)
-        }
+        TaskNotificationService.ensureRunning(getApplication())
     }
 
     fun setCompletionNotificationsEnabled(enabled: Boolean) {
         preferences.edit { putBoolean(TaskNotificationService.ENABLED_PREFERENCE, enabled) }
         _state.update { it.copy(completionNotificationsEnabled = enabled, error = null) }
-        TaskNotificationService.setEnabled(getApplication(), enabled)
+        TaskNotificationService.ensureRunning(getApplication())
     }
 
     fun sendTestNotification() {
@@ -475,6 +474,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             it.copy(
                 connection = ConnectionState.Disconnected,
                 isReconnecting = false,
+                isSyncing = false,
                 selectedThread = null,
                 messages = emptyList(),
                 activeTurnId = null,
@@ -712,12 +712,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         val visibleMessages = _state.value.messages.takeIf { preserveVisibleContent }.orEmpty()
         _state.update {
             if (preserveVisibleContent) {
-                it.copy(selectedThread = thread, isLoading = false, error = null)
+                it.copy(
+                    selectedThread = thread,
+                    isLoading = false,
+                    isSyncing = true,
+                    error = null,
+                )
             } else {
                 it.copy(
                     selectedThread = thread,
                     messages = emptyList(),
                     isLoading = true,
+                    isSyncing = true,
                     error = null,
                     isSending = false,
                     activeTurnId = null,
@@ -744,7 +750,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             if (generation != threadLoadGeneration || _state.value.selectedThread?.id != thread.id) {
                 return@launch
             }
-            if (cached.isNotEmpty()) _state.update { it.copy(messages = cached) }
+            if (cached.isNotEmpty()) {
+                _state.update { it.copy(messages = cached, isLoading = false) }
+            }
             prefetchMessageImages(cached)
 
             val pendingClientMessageIds = (cached + _state.value.messages)
@@ -766,7 +774,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                     }
                     result.fold(
                         onSuccess = { payload ->
-                            val fresh = parseMessages(payload.optJSONArray("messages") ?: JSONArray())
+                            val fresh = parseChatMessages(payload.optJSONArray("messages") ?: JSONArray())
                             val settings = payload.optJSONObject("settings")
                             val threadPayload = payload.optJSONObject("thread")
                             val goal = parseGoal(payload.optJSONObject("goal"))
@@ -815,6 +823,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                                 state.copy(
                                     messages = mergedMessages,
                                     isLoading = false,
+                                    isSyncing = false,
                                     isSending = threadPayload?.optString("status") == "active",
                                     activeTurnId = payload.optString("activeTurnId").takeIf { it.isNotBlank() },
                                     currentStatus = if (threadPayload?.optString("status") == "active") {
@@ -846,7 +855,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                                 stopActiveThreadSync(thread.id)
                             }
                         },
-                        onFailure = { fail(it.message ?: "无法读取任务内容") },
+                        onFailure = {
+                            _state.update { state -> state.copy(isSyncing = false, isLoading = false) }
+                            fail(it.message ?: "无法读取任务内容")
+                        },
                     )
                 }
             }
@@ -863,6 +875,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             it.copy(
                 selectedThread = null,
                 messages = emptyList(),
+                isSyncing = false,
                 activeTurnId = null,
                 error = null,
                 isSending = false,
@@ -917,7 +930,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                     if (_state.value.selectedThread?.id != thread.id) return@onMain
                     result.fold(
                         onSuccess = { payload ->
-                            val older = parseMessages(payload.optJSONArray("messages") ?: JSONArray())
+                            val older = parseChatMessages(payload.optJSONArray("messages") ?: JSONArray())
                             val merged = mergeMessageWindows(
                                 MessageCacheStore.MAX_MESSAGES_PER_THREAD,
                                 older,
@@ -1360,6 +1373,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                                 isArchivingThread = false,
                                 selectedThread = null,
                                 messages = emptyList(),
+                                isSyncing = false,
                                 activeTurnId = null,
                                 isSending = false,
                                 currentStatus = "",
@@ -1549,6 +1563,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 },
                 isReconnecting = true,
                 isLoading = false,
+                isSyncing = false,
                 error = null,
             )
         }
@@ -1736,6 +1751,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                     activeThreadSyncInFlight
                 ) continue
                 activeThreadSyncInFlight = true
+                _state.update { state ->
+                    if (state.selectedThread?.id == threadId) state.copy(isSyncing = true) else state
+                }
                 client.request(
                     "thread.read",
                     JSONObject()
@@ -1745,6 +1763,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                     onMain {
                         activeThreadSyncInFlight = false
                         if (_state.value.selectedThread?.id != threadId) return@onMain
+                        _state.update { it.copy(isSyncing = false) }
                         result.onSuccess { payload -> applyActiveThreadSnapshot(threadId, payload) }
                     }
                 }
@@ -1762,7 +1781,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     }
 
     private fun applyActiveThreadSnapshot(threadId: String, payload: JSONObject) {
-        val fresh = parseMessages(payload.optJSONArray("messages") ?: JSONArray())
+        val fresh = parseChatMessages(payload.optJSONArray("messages") ?: JSONArray())
         val threadIsActive = payload.optJSONObject("thread")?.optString("status") == "active"
         val activeTurnId = payload.optString("activeTurnId").takeIf(String::isNotBlank)
         val previousMessages = _state.value.messages
@@ -1909,7 +1928,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
 
     private fun applyItem(item: JSONObject?) {
         if (item == null || item == JSONObject.NULL) return
-        val parsed = parseMessage(item) ?: return
+        val parsed = parseChatMessage(item) ?: return
         _state.update { state ->
             val index = state.messages.indexOfFirst { it.id == parsed.id }
             if (index < 0) state.copy(messages = state.messages + parsed)
@@ -1948,12 +1967,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             goalStatus = item.optJSONObject("goal")?.optString("status")?.ifBlank { null },
             goalObjective = item.optJSONObject("goal")?.optString("objective")?.ifBlank { null },
         )
-    }
-
-    private fun parseMessages(array: JSONArray): List<ChatMessage> = buildList {
-        for (index in 0 until array.length()) {
-            parseMessage(array.optJSONObject(index))?.let(::add)
-        }
     }
 
     private fun parseModels(array: JSONArray): List<ModelOption> = buildList {
@@ -1996,40 +2009,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 ),
             )
         }
-    }
-
-    private fun parseMessage(item: JSONObject?): ChatMessage? {
-        item ?: return null
-        val attachments = buildList {
-            val source = item.optJSONArray("attachments") ?: JSONArray()
-            for (index in 0 until source.length()) {
-                val attachment = source.optJSONObject(index) ?: continue
-                val mediaSource = attachment.optString("source")
-                if (mediaSource.isBlank()) continue
-                add(
-                    MediaAttachment(
-                        id = attachment.optString("id", "media-$index"),
-                        kind = attachment.optString("kind", "file"),
-                        source = mediaSource,
-                        name = attachment.optString("name", "媒体文件"),
-                        mimeType = attachment.optString("mimeType"),
-                        isLocal = attachment.optBoolean("isLocal"),
-                    ),
-                )
-            }
-        }
-        return ChatMessage(
-            id = item.optString("id"),
-            turnId = item.optString("turnId"),
-            role = item.optString("role"),
-            text = item.optString("text"),
-            kind = item.optString("kind"),
-            phase = item.optString("phase").ifBlank { null },
-            command = item.optString("command").ifBlank { null },
-            status = item.optString("status").ifBlank { null },
-            attachments = attachments,
-            deliveryState = item.optString("deliveryState").ifBlank { null },
-        )
     }
 
     private fun parseGoal(item: JSONObject?): ThreadGoal? {

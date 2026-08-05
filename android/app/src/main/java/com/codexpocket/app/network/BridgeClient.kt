@@ -57,6 +57,8 @@ class BridgeClient(context: Context, private val listener: Listener) {
     private var networkSnapshotReady = false
     private var lastNetworkRestartAt = 0L
     private var networkReconnectRunnable: Runnable? = null
+    private var handoverRecoveryRunnable: Runnable? = null
+    private var handoverRecoveryAttempt = 0
     private var reconnectRunnable: Runnable? = null
     private var helloTimeoutRunnable: Runnable? = null
     @Volatile
@@ -68,6 +70,8 @@ class BridgeClient(context: Context, private val listener: Listener) {
     private var lastEventSequence = 0L
     @Volatile
     private var generation = 0
+    @Volatile
+    private var connectedGeneration = -1
     @Volatile
     private var shouldReconnect = false
 
@@ -97,6 +101,7 @@ class BridgeClient(context: Context, private val listener: Listener) {
         generation += 1
         cancelReconnect()
         cancelHelloTimeout()
+        cancelHandoverRecovery()
         socket?.cancel()
         openSocket(generation)
     }
@@ -106,6 +111,7 @@ class BridgeClient(context: Context, private val listener: Listener) {
         generation += 1
         cancelReconnect()
         cancelHelloTimeout()
+        cancelHandoverRecovery()
         socket?.close(1000, "Client disconnect")
         socket = null
         failPending("连接已断开")
@@ -172,8 +178,7 @@ class BridgeClient(context: Context, private val listener: Listener) {
 
     private fun scheduleReconnect(reason: String?) {
         if (!shouldReconnect) return
-        val delays = intArrayOf(1, 2, 5, 10, 20, 30)
-        val delaySeconds = delays[reconnectAttempt.coerceAtMost(delays.lastIndex)]
+        val delaySeconds = reconnectDelaySeconds(reconnectAttempt)
         reconnectAttempt += 1
         listener.onDisconnected(reason)
         listener.onReconnecting(delaySeconds)
@@ -239,6 +244,8 @@ class BridgeClient(context: Context, private val listener: Listener) {
         if (!shouldRestartForNetworkChange(networkSnapshot, nextSnapshot, shouldReconnect)) return
         networkSnapshot = nextSnapshot
         cancelNetworkReconnect()
+        cancelHandoverRecovery()
+        handoverRecoveryAttempt = 0
         networkReconnectRunnable = Runnable { restartAfterNetworkHandover() }
             .also { reconnectHandler.postDelayed(it, NETWORK_HANDOVER_DEBOUNCE_MILLIS) }
     }
@@ -264,12 +271,42 @@ class BridgeClient(context: Context, private val listener: Listener) {
         reconnectAttempt = 0
         listener.onDisconnected("网络已切换")
         listener.onReconnecting(0)
-        openSocket(generation)
+        handoverRecoveryAttempt += 1
+        val openedGeneration = generation
+        openSocket(openedGeneration)
+        if (handoverRecoveryAttempt < MAX_HANDOVER_RECOVERY_ATTEMPTS) {
+            scheduleHandoverRecoveryCheck(openedGeneration)
+        }
     }
 
     private fun cancelNetworkReconnect() {
         networkReconnectRunnable?.let(reconnectHandler::removeCallbacks)
         networkReconnectRunnable = null
+    }
+
+    private fun scheduleHandoverRecoveryCheck(connectionGeneration: Int) {
+        cancelHandoverRecovery()
+        handoverRecoveryRunnable = Runnable {
+            handoverRecoveryRunnable = null
+            if (
+                shouldReconnect &&
+                connectionGeneration == generation &&
+                connectedGeneration != connectionGeneration
+            ) {
+                // Tailscale often needs a moment to rebuild its userspace VPN
+                // route after Wi-Fi/cellular changes. A socket opened during
+                // that small gap can remain black-holed without failing fast,
+                // so replace it rather than requiring an app restart.
+                restartAfterNetworkHandover()
+            }
+        }.also {
+            reconnectHandler.postDelayed(it, HANDOVER_RECOVERY_CHECK_MILLIS)
+        }
+    }
+
+    private fun cancelHandoverRecovery() {
+        handoverRecoveryRunnable?.let(reconnectHandler::removeCallbacks)
+        handoverRecoveryRunnable = null
     }
 
     private fun scheduleRequestTimeout(id: String, pending: PendingRequest) {
@@ -344,6 +381,8 @@ class BridgeClient(context: Context, private val listener: Listener) {
 
     private fun handleHello(webSocket: WebSocket, message: JSONObject) {
         cancelHelloTimeout()
+        connectedGeneration = generation
+        cancelHandoverRecovery()
         reconnectAttempt = 0
         cancelReconnect()
         resendPending(webSocket)
@@ -441,6 +480,11 @@ internal fun shouldRestartForNetworkChange(
     shouldReconnect: Boolean,
 ): Boolean = shouldReconnect && previousSnapshot != nextSnapshot
 
+internal fun reconnectDelaySeconds(attempt: Int): Int {
+    val delays = intArrayOf(1, 1, 2, 2, 3, 5, 8, 10)
+    return delays[attempt.coerceIn(0, delays.lastIndex)]
+}
+
 internal fun isRetryableBridgeMethod(method: String): Boolean = method in setOf(
     "threads.list",
     "thread.read",
@@ -465,7 +509,9 @@ internal fun requestTimeoutMillis(method: String): Long = when (method) {
 
 private const val NETWORK_HANDOVER_DEBOUNCE_MILLIS = 600L
 private const val NETWORK_RESTART_MIN_INTERVAL_MILLIS = 2_000L
-private const val HELLO_TIMEOUT_MILLIS = 12_000L
+private const val HANDOVER_RECOVERY_CHECK_MILLIS = 3_500L
+private const val MAX_HANDOVER_RECOVERY_ATTEMPTS = 3
+private const val HELLO_TIMEOUT_MILLIS = 7_500L
 private const val MUTATION_ACK_TIMEOUT_MILLIS = 8_000L
 private const val READ_REQUEST_TIMEOUT_MILLIS = 30_000L
 private const val MAX_REPLAY_EVENTS = 250

@@ -174,6 +174,7 @@ data class UiState(
     val updatingAutomationId: String? = null,
     val input: String = "",
     val isLoading: Boolean = false,
+    val isSyncing: Boolean = false,
     val isSending: Boolean = false,
     val activeTurnId: String? = null,
     val currentStatus: String = "",
