@@ -15,10 +15,15 @@ import { EventJournal } from "./event-journal.mjs";
 import { loadConfig } from "./config.mjs";
 import { mapModel, mapNotification, mapThreadDetail, mapThreadSummary } from "./mapper.mjs";
 import { MutationReceipts } from "./mutation-receipts.mjs";
+import {
+  filterReplayForClient,
+  shouldDeliverSocketPayload,
+  socketClientMode,
+} from "./socket-policy.mjs";
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.15.14";
+const VERSION = "0.15.15";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const codex = new CodexClient({ codexBin: config.codexBin });
 const loadedThreads = new Map();
@@ -287,6 +292,8 @@ const server = http.createServer((req, res) => {
       version: VERSION,
       codexReady: codex.started,
       clients: sockets.size,
+      foregroundClients: [...sockets].filter((ws) => ws.clientMode !== "background").length,
+      backgroundClients: [...sockets].filter((ws) => ws.clientMode === "background").length,
     });
     return;
   }
@@ -382,7 +389,9 @@ function send(ws, payload) {
 
 function broadcast(payload) {
   const outgoing = payload?.type === "event" ? eventJournal.record(payload) : payload;
-  for (const ws of sockets) send(ws, outgoing);
+  for (const ws of sockets) {
+    if (shouldDeliverSocketPayload(ws.clientMode, outgoing)) send(ws, outgoing);
+  }
 }
 
 async function ensureThreadLoaded(threadId) {
@@ -890,8 +899,9 @@ async function handleRequest(message) {
   }
 }
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, request) => {
   ws.isAlive = true;
+  ws.clientMode = socketClientMode(request.url);
   sockets.add(ws);
   send(ws, {
     type: "hello",
@@ -913,7 +923,11 @@ wss.on("connection", (ws) => {
       if (message.type !== "request" || !message.id || !message.method) {
         throw new Error("Invalid request envelope");
       }
-      const result = await handleRequest(message);
+      const result = filterReplayForClient(
+        ws.clientMode,
+        message.method,
+        await handleRequest(message),
+      );
       send(ws, { type: "response", id: message.id, ok: true, result });
     } catch (error) {
       send(ws, {
@@ -941,7 +955,7 @@ const socketHeartbeat = setInterval(() => {
     ws.isAlive = false;
     ws.ping();
   }
-}, 10_000);
+}, 30_000);
 socketHeartbeat.unref();
 
 codex.on("notification", (message) => {

@@ -34,7 +34,7 @@ class BridgeClient(context: Context, private val listener: Listener) {
         // Detect a half-open socket quickly after Wi-Fi/cellular handovers.
         // Requests are idempotent where retried, so reconnecting is safer than
         // leaving the phone attached to a dead downlink for tens of seconds.
-        .pingInterval(10, TimeUnit.SECONDS)
+        .pingInterval(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
 
@@ -483,6 +483,11 @@ internal fun shouldRestartForNetworkChange(
 internal fun reconnectDelaySeconds(attempt: Int): Int {
     val delays = intArrayOf(1, 1, 2, 2, 3, 5, 8, 10)
     return delays[attempt.coerceIn(0, delays.lastIndex)]
+}
+
+internal fun backgroundBridgeEndpoint(endpoint: String): String {
+    if (endpoint.isBlank() || endpoint.contains("client=background")) return endpoint
+    return endpoint + if ('?' in endpoint) "&client=background" else "?client=background"
 }
 
 internal fun isRetryableBridgeMethod(method: String): Boolean = method in setOf(

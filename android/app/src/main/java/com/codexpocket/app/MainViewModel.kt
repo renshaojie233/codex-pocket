@@ -71,6 +71,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     private var activeThreadSyncJob: Job? = null
     private var activeThreadSyncThreadId: String? = null
     private var activeThreadSyncInFlight = false
+    private var appInForeground = false
+    private var pausedForBackground = false
     private val _state = MutableStateFlow(
         UiState(
             endpoint = preferences.getString("endpoint", BuildConfig.BRIDGE_ENDPOINT)
@@ -105,7 +107,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
 
     init {
         if (_state.value.token.isNotBlank()) {
-            TaskNotificationService.ensureRunning(application)
             connect()
         }
     }
@@ -443,12 +444,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         }
         _state.update { it.copy(connection = ConnectionState.Connecting, isReconnecting = false, error = null) }
         client.connect(endpoint, token)
-        TaskNotificationService.ensureRunning(getApplication())
     }
 
     fun setCompletionNotificationsEnabled(enabled: Boolean) {
         preferences.edit { putBoolean(TaskNotificationService.ENABLED_PREFERENCE, enabled) }
         _state.update { it.copy(completionNotificationsEnabled = enabled, error = null) }
+        if (!appInForeground) TaskNotificationService.ensureRunning(getApplication())
+    }
+
+    fun onAppForeground() {
+        if (appInForeground) return
+        appInForeground = true
+        TaskNotificationService.stop(getApplication())
+        if (pausedForBackground && _state.value.token.isNotBlank()) {
+            pausedForBackground = false
+            connect()
+        }
+    }
+
+    fun onAppBackground() {
+        if (!appInForeground) return
+        appInForeground = false
+        if (_state.value.token.isBlank() || _state.value.endpoint.isBlank()) return
+        pausedForBackground = true
+        stopActiveThreadSync()
+        client.disconnect()
         TaskNotificationService.ensureRunning(getApplication())
     }
 
@@ -468,6 +488,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     }
 
     fun disconnect() {
+        pausedForBackground = false
+        TaskNotificationService.stop(getApplication())
         cacheCurrentMessages(delayMillis = 0)
         client.disconnect()
         _state.update {
@@ -1628,6 +1650,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                         )
                     }
                     cacheCurrentMessages()
+                    if (appInForeground && _state.value.completionNotificationsEnabled) {
+                        TaskNotifications.showCompletion(
+                            getApplication(),
+                            data.optString("threadId"),
+                            completedThread?.title.orEmpty(),
+                        )
+                    }
                     if (completedThread != null) {
                         viewModelScope.launch {
                             delay(COMPLETED_THREAD_SYNC_DELAY_MILLIS)

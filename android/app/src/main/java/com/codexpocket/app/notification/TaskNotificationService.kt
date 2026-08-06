@@ -17,6 +17,7 @@ import com.codexpocket.app.BuildConfig
 import com.codexpocket.app.cache.MessageCacheStore
 import com.codexpocket.app.model.parseChatMessages
 import com.codexpocket.app.network.BridgeClient
+import com.codexpocket.app.network.backgroundBridgeEndpoint
 import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONArray
 import org.json.JSONObject
@@ -80,10 +81,10 @@ class TaskNotificationService : Service(), BridgeClient.Listener {
         if (threadId.isNotBlank() && event in THREAD_SYNC_EVENTS) {
             scheduleThreadSync(
                 threadId,
-                if (event == "turn.completed" || event == "item.completed") {
+                if (event == "turn.completed") {
                     FINAL_EVENT_SYNC_DELAY_MILLIS
                 } else {
-                    STREAM_EVENT_SYNC_DELAY_MILLIS
+                    BACKGROUND_EVENT_SYNC_DELAY_MILLIS
                 },
             )
         }
@@ -113,7 +114,7 @@ class TaskNotificationService : Service(), BridgeClient.Listener {
             return
         }
         updateListenerStatus("正在连接 Mac…")
-        client.connect(endpoint, token)
+        client.connect(backgroundBridgeEndpoint(endpoint), token)
     }
 
     private fun handleTurnCompleted(data: JSONObject) {
@@ -197,7 +198,7 @@ class TaskNotificationService : Service(), BridgeClient.Listener {
             "thread.read",
             JSONObject()
                 .put("threadId", threadId)
-                .put("messageLimit", MessageCacheStore.LATEST_SYNC_MESSAGE_COUNT),
+                .put("messageLimit", BACKGROUND_SYNC_MESSAGE_COUNT),
         ) { result ->
             result.onSuccess { payload ->
                 val messages = parseChatMessages(payload.optJSONArray("messages") ?: JSONArray())
@@ -240,23 +241,17 @@ class TaskNotificationService : Service(), BridgeClient.Listener {
         const val PREFERENCES_NAME = "codex-pocket"
         const val ENABLED_PREFERENCE = "completion-notifications"
         private const val DISCARDED_LOCAL_MESSAGES_PREFERENCE = "discarded-local-message-ids"
-        private const val RECENT_THREAD_PREFETCH_COUNT = 12
-        private const val MAX_CONCURRENT_SYNCS = 2
+        private const val RECENT_THREAD_PREFETCH_COUNT = 4
+        private const val MAX_CONCURRENT_SYNCS = 1
+        private const val BACKGROUND_SYNC_MESSAGE_COUNT = 40
         private const val INITIAL_PREFETCH_DELAY_MILLIS = 100L
-        private const val PREFETCH_STAGGER_MILLIS = 180L
-        private const val SYNC_QUEUE_RETRY_MILLIS = 300L
-        private const val STREAM_EVENT_SYNC_DELAY_MILLIS = 1_200L
-        private const val FINAL_EVENT_SYNC_DELAY_MILLIS = 120L
-        private const val RESYNC_AFTER_FLIGHT_DELAY_MILLIS = 250L
+        private const val PREFETCH_STAGGER_MILLIS = 500L
+        private const val SYNC_QUEUE_RETRY_MILLIS = 750L
+        private const val BACKGROUND_EVENT_SYNC_DELAY_MILLIS = 4_000L
+        private const val FINAL_EVENT_SYNC_DELAY_MILLIS = 300L
+        private const val RESYNC_AFTER_FLIGHT_DELAY_MILLIS = 1_000L
         private val THREAD_SYNC_EVENTS = setOf(
-            "agent.delta",
-            "reasoning.delta",
-            "plan.delta",
-            "tool.progress",
-            "tool.output",
-            "item.started",
             "item.completed",
-            "turn.started",
             "turn.completed",
             "thread.status",
             "thread.settings",
@@ -270,6 +265,11 @@ class TaskNotificationService : Service(), BridgeClient.Listener {
                 appContext,
                 Intent(appContext, TaskNotificationService::class.java).setAction(ACTION_START),
             )
+        }
+
+        fun stop(context: Context) {
+            val appContext = context.applicationContext
+            appContext.stopService(Intent(appContext, TaskNotificationService::class.java))
         }
 
         fun sendTest(context: Context): Boolean {

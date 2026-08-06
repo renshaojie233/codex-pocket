@@ -38,4 +38,10 @@ class BridgeClientPolicyTest {
         assertTrue(reconnectDelaySeconds(4) <= 3)
         assertTrue(reconnectDelaySeconds(100) <= 10)
     }
+
+    @Test
+    fun `marks the notification socket as a low traffic background client`() {
+        assertTrue(backgroundBridgeEndpoint("ws://100.64.0.1:8787/ws").endsWith("?client=background"))
+        assertTrue(backgroundBridgeEndpoint("wss://example.test/ws?v=1").endsWith("&client=background"))
+    }
 }

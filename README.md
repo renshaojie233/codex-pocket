@@ -76,7 +76,7 @@ bridge/data/config.json
 APK 会生成到：
 
 ```text
-outputs/codex-pocket-0.15.14.apk
+outputs/codex-pocket-0.15.15.apk
 ```
 
 也可以在手机浏览器打开下面的私有下载页：

@@ -6,7 +6,7 @@ android_dir="$project_dir/android"
 jdk_home="${JAVA_HOME:-}"
 sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
 apk_source="$android_dir/app/build/outputs/apk/debug/app-debug.apk"
-apk_target="$project_dir/outputs/codex-pocket-0.15.14.apk"
+apk_target="$project_dir/outputs/codex-pocket-0.15.15.apk"
 
 portable_jdk="$project_dir/work/toolchain/jdk-17.0.20+8/Contents/Home"
 if [[ -z "$jdk_home" && -x "$portable_jdk/bin/java" ]]; then
