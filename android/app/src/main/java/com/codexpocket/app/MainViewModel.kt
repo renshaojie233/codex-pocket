@@ -1877,9 +1877,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         agentStreamBuffers.getOrPut(itemId, ::StringBuilder).append(text)
         if (agentStreamJobs[itemId]?.isActive == true) return
         agentStreamJobs[itemId] = viewModelScope.launch {
+            var idleChecks = 0
             while (true) {
                 val pending = agentStreamBuffers[itemId] ?: break
-                if (pending.isEmpty()) break
+                if (pending.isEmpty()) {
+                    if (pendingAgentCompletions.containsKey(itemId)) break
+                    if (idleChecks >= SMOOTH_STREAM_MAX_IDLE_CHECKS) break
+                    idleChecks += 1
+                    delay(SMOOTH_STREAM_IDLE_TICK_MILLIS)
+                    continue
+                }
+                idleChecks = 0
                 val pendingText = pending.toString()
                 val codePoints = pendingText.codePointCount(0, pendingText.length)
                 val (chunk, remainder) = takeCodePointPrefix(
@@ -2230,6 +2238,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         private const val CACHE_WRITE_DELAY_MILLIS = 650L
         private const val ACTIVE_THREAD_SYNC_INTERVAL_MILLIS = 8_000L
         private const val SMOOTH_STREAM_TICK_MILLIS = 28L
+        private const val SMOOTH_STREAM_IDLE_TICK_MILLIS = 80L
+        private const val SMOOTH_STREAM_MAX_IDLE_CHECKS = 25
         private const val COMPLETED_THREAD_SYNC_DELAY_MILLIS = 350L
         private const val SUBMISSION_RECONCILE_DELAY_MILLIS = 1_000L
         private const val SUBMISSION_RECONCILE_ATTEMPTS = 2

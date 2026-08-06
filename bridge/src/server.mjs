@@ -23,7 +23,7 @@ import {
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.15.16";
+const VERSION = "0.15.17";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const codex = new CodexClient({ codexBin: config.codexBin });
 const loadedThreads = new Map();

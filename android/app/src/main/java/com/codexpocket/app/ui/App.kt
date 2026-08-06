@@ -2326,26 +2326,18 @@ private fun MessageBubble(
                 ),
             ) {
                 if (message.text.isNotBlank()) {
-                    if (message.isStreaming && !isUser) {
-                        Text(
-                            text = message.text,
-                            color = bubbleContentColor,
-                            fontSize = fontSizeSp.sp,
-                            lineHeight = (fontSizeSp * if (compact) 1.08f else 1.16f).sp,
-                        )
-                    } else {
-                        MarkdownText(
-                            markdown = message.text,
-                            color = bubbleContentColor,
-                            linkColor = if (isUser && !isFailed) {
-                                MaterialTheme.colorScheme.primaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.primary
-                            },
-                            fontSizeSp = fontSizeSp,
-                            compact = compact,
-                        )
-                    }
+                    MarkdownText(
+                        markdown = message.text,
+                        color = bubbleContentColor,
+                        linkColor = if (isUser && !isFailed) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                        fontSizeSp = fontSizeSp,
+                        compact = compact,
+                        renderMarkdown = !message.isStreaming || isUser,
+                    )
                 }
                 if (message.attachments.isNotEmpty()) {
                     if (message.text.isNotBlank()) Spacer(Modifier.height(10.dp))
@@ -2842,6 +2834,7 @@ private fun MarkdownText(
     linkColor: Color,
     fontSizeSp: Float,
     compact: Boolean,
+    renderMarkdown: Boolean = true,
 ) {
     val context = LocalContext.current
     val textColor = color.toArgb()
@@ -2861,7 +2854,9 @@ private fun MarkdownText(
             .build()
     }
     val resolvedLinkColor = linkColor.toArgb()
-    val normalizedMarkdown = remember(markdown) { normalizeLatexForMarkwon(markdown) }
+    val displayedText = remember(markdown, renderMarkdown) {
+        if (renderMarkdown) normalizeLatexForMarkwon(markdown) else markdown
+    }
     AndroidView(
         factory = { viewContext ->
             TextView(viewContext).apply {
@@ -2878,7 +2873,13 @@ private fun MarkdownText(
             textView.setLinkTextColor(resolvedLinkColor)
             textView.textSize = fontSizeSp
             textView.setLineSpacing(0f, if (compact) 1.02f else 1.08f)
-            markwon.setMarkdown(textView, normalizedMarkdown)
+            if (renderMarkdown) {
+                markwon.setMarkdown(textView, displayedText)
+            } else {
+                // Keep the same native text view from the first streamed
+                // character through the final Markdown render.
+                textView.text = displayedText
+            }
         },
         modifier = Modifier.fillMaxWidth(),
     )
