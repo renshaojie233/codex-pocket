@@ -38,6 +38,8 @@ import com.codexpocket.app.network.BridgeClient
 import com.codexpocket.app.network.ImageUploader
 import com.codexpocket.app.notification.TaskNotificationService
 import com.codexpocket.app.notification.TaskNotifications
+import com.codexpocket.app.ui.smoothStreamChunkCodePoints
+import com.codexpocket.app.ui.takeCodePointPrefix
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
@@ -71,6 +73,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     private var activeThreadSyncJob: Job? = null
     private var activeThreadSyncThreadId: String? = null
     private var activeThreadSyncInFlight = false
+    private val agentStreamBuffers = mutableMapOf<String, StringBuilder>()
+    private val agentStreamJobs = mutableMapOf<String, Job>()
+    private val pendingAgentCompletions = mutableMapOf<String, JSONObject>()
     private var appInForeground = false
     private var pausedForBackground = false
     private val _state = MutableStateFlow(
@@ -468,6 +473,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         if (_state.value.token.isBlank() || _state.value.endpoint.isBlank()) return
         pausedForBackground = true
         stopActiveThreadSync()
+        clearAgentStreams()
         client.disconnect()
         TaskNotificationService.ensureRunning(getApplication())
     }
@@ -491,6 +497,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         pausedForBackground = false
         TaskNotificationService.stop(getApplication())
         cacheCurrentMessages(delayMillis = 0)
+        clearAgentStreams()
         client.disconnect()
         _state.update {
             it.copy(
@@ -729,7 +736,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         loadThread(thread, preserveVisibleContent = true)
 
     private fun loadThread(thread: ThreadSummary, preserveVisibleContent: Boolean) {
-        if (!preserveVisibleContent) cacheCurrentMessages(delayMillis = 0)
+        if (!preserveVisibleContent) {
+            cacheCurrentMessages(delayMillis = 0)
+            clearAgentStreams()
+        }
         val generation = ++threadLoadGeneration
         val visibleMessages = _state.value.messages.takeIf { preserveVisibleContent }.orEmpty()
         _state.update {
@@ -825,12 +835,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                                 !message.isLocalSubmission() && message.id !in freshIds &&
                                     (message.isStreaming || message.id !in cachedIds)
                             }
-                            val mergedMessages = mergeMessageWindows(
-                                MessageCacheStore.MAX_MESSAGES_PER_THREAD,
-                                cachedWithoutLocalSubmissions,
-                                fresh,
-                                liveMessages,
-                                unresolvedLocalSubmissions,
+                            val mergedMessages = preserveSmoothedAgentText(
+                                currentMessages,
+                                mergeMessageWindows(
+                                    MessageCacheStore.MAX_MESSAGES_PER_THREAD,
+                                    cachedWithoutLocalSubmissions,
+                                    fresh,
+                                    liveMessages,
+                                    unresolvedLocalSubmissions,
+                                ),
                             )
                             _state.update { state ->
                                 val model = settings?.optString("model").orEmpty()
@@ -892,6 +905,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     private fun closeThread(preserveCache: Boolean) {
         if (preserveCache) cacheCurrentMessages(delayMillis = 0)
         stopActiveThreadSync()
+        clearAgentStreams()
         threadLoadGeneration += 1
         _state.update {
             it.copy(
@@ -1616,7 +1630,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             "tool.output" -> applyStreamingActivity(data, "正在执行命令", "tool")
             "item.started", "item.completed" -> {
                 if (!belongsToSelectedThread(data)) return@onMain
-                applyItem(data.optJSONObject("item"))
+                val item = data.optJSONObject("item")
+                if (event == "item.completed") applyCompletedItem(item) else applyItem(item)
                 applyActivity(data.optJSONObject("activity"))
             }
             "turn.started" -> {
@@ -1814,10 +1829,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         val threadIsActive = payload.optJSONObject("thread")?.optString("status") == "active"
         val activeTurnId = payload.optString("activeTurnId").takeIf(String::isNotBlank)
         val previousMessages = _state.value.messages
-        val merged = mergeMessageWindows(
-            MessageCacheStore.MAX_MESSAGES_PER_THREAD,
+        val merged = preserveSmoothedAgentText(
             previousMessages,
-            fresh,
+            mergeMessageWindows(
+                MessageCacheStore.MAX_MESSAGES_PER_THREAD,
+                previousMessages,
+                fresh,
+            ),
         )
         _state.update { state ->
             if (state.selectedThread?.id != threadId) state else state.copy(
@@ -1845,12 +1863,93 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         if (data.optString("threadId") != selectedId) return
         val itemId = data.optString("itemId")
         val delta = data.optString("delta")
+        if (itemId.isBlank() || delta.isEmpty()) return
+        enqueueAgentText(
+            threadId = data.optString("threadId"),
+            turnId = data.optString("turnId"),
+            itemId = itemId,
+            text = delta,
+        )
+    }
+
+    private fun enqueueAgentText(threadId: String, turnId: String, itemId: String, text: String) {
+        if (text.isEmpty()) return
+        agentStreamBuffers.getOrPut(itemId, ::StringBuilder).append(text)
+        if (agentStreamJobs[itemId]?.isActive == true) return
+        agentStreamJobs[itemId] = viewModelScope.launch {
+            while (true) {
+                val pending = agentStreamBuffers[itemId] ?: break
+                if (pending.isEmpty()) break
+                val pendingText = pending.toString()
+                val codePoints = pendingText.codePointCount(0, pendingText.length)
+                val (chunk, remainder) = takeCodePointPrefix(
+                    pendingText,
+                    smoothStreamChunkCodePoints(codePoints),
+                )
+                pending.clear()
+                pending.append(remainder)
+                appendAgentChunk(threadId, turnId, itemId, chunk)
+                delay(SMOOTH_STREAM_TICK_MILLIS)
+            }
+            agentStreamBuffers.remove(itemId)
+            agentStreamJobs.remove(itemId)
+            pendingAgentCompletions.remove(itemId)?.let {
+                applyItem(it)
+                _state.update { state ->
+                    if (state.activeTurnId == null) {
+                        state.copy(isSending = false, currentStatus = "已完成", statusDetail = "")
+                    } else {
+                        state
+                    }
+                }
+            }
+            cacheCurrentMessages()
+        }
+    }
+
+    /**
+     * A periodic thread snapshot may already contain the complete answer while
+     * the phone is still revealing queued deltas. Keep the visible prefix and
+     * add only a genuinely missing suffix to the local animation queue.
+     */
+    private fun preserveSmoothedAgentText(
+        previous: List<ChatMessage>,
+        merged: List<ChatMessage>,
+    ): List<ChatMessage> {
+        if (agentStreamJobs.isEmpty() && agentStreamBuffers.isEmpty()) return merged
+        val previousById = previous.associateBy { it.id }
+        return merged.map { fresh ->
+            val existing = previousById[fresh.id] ?: return@map fresh
+            val buffer = agentStreamBuffers[fresh.id]
+            val isSmoothing = agentStreamJobs[fresh.id]?.isActive == true ||
+                buffer?.isNotEmpty() == true
+            if (!isSmoothing || fresh.kind != "agentMessage" || !fresh.text.startsWith(existing.text)) {
+                return@map fresh
+            }
+
+            val projectedText = existing.text + buffer?.toString().orEmpty()
+            if (fresh.text.startsWith(projectedText) && fresh.text.length > projectedText.length) {
+                buffer?.append(fresh.text.substring(projectedText.length))
+            }
+            fresh.copy(text = existing.text, isStreaming = true)
+        }
+    }
+
+    private fun clearAgentStreams() {
+        agentStreamJobs.values.forEach { it.cancel() }
+        agentStreamJobs.clear()
+        agentStreamBuffers.clear()
+        pendingAgentCompletions.clear()
+    }
+
+    private fun appendAgentChunk(threadId: String, turnId: String, itemId: String, chunk: String) {
+        if (_state.value.selectedThread?.id != threadId || chunk.isEmpty()) return
         _state.update { state ->
             val index = state.messages.indexOfFirst { it.id == itemId }
             if (index >= 0) {
                 val messages = state.messages.toMutableList()
                 messages[index] = messages[index].copy(
-                    text = messages[index].text + delta,
+                    text = messages[index].text + chunk,
                     isStreaming = true,
                 )
                 state.copy(
@@ -1863,9 +1962,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 state.copy(
                     messages = state.messages + ChatMessage(
                         id = itemId,
-                        turnId = data.optString("turnId"),
+                        turnId = turnId,
                         role = "assistant",
-                        text = delta,
+                        text = chunk,
                         kind = "agentMessage",
                         isStreaming = true,
                     ),
@@ -1875,7 +1974,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
                 )
             }
         }
-        cacheCurrentMessages()
+    }
+
+    private fun applyCompletedItem(item: JSONObject?) {
+        if (item == null || item == JSONObject.NULL) return
+        val parsed = parseChatMessage(item)
+        val itemId = parsed?.id.orEmpty()
+        if (parsed?.kind == "agentMessage" && itemId.isNotBlank()) {
+            val visibleText = _state.value.messages.firstOrNull { it.id == itemId }?.text.orEmpty()
+            val projectedText = visibleText + agentStreamBuffers[itemId]?.toString().orEmpty()
+            if (parsed.text.startsWith(projectedText) && parsed.text.length > projectedText.length) {
+                enqueueAgentText(
+                    threadId = _state.value.selectedThread?.id.orEmpty(),
+                    turnId = parsed.turnId,
+                    itemId = itemId,
+                    text = parsed.text.substring(projectedText.length),
+                )
+            }
+        }
+        val smoothing = parsed?.kind == "agentMessage" &&
+            (agentStreamJobs[itemId]?.isActive == true || agentStreamBuffers[itemId]?.isNotEmpty() == true)
+        if (smoothing) {
+            pendingAgentCompletions[itemId] = JSONObject(item.toString())
+        } else {
+            applyItem(item)
+        }
     }
 
     private fun applyStreamingActivity(data: JSONObject, title: String, kind: String) {
@@ -2089,6 +2212,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
 
     override fun onCleared() {
         stopActiveThreadSync()
+        clearAgentStreams()
         cacheWriteJobs.values.forEach { it.cancel() }
         val current = _state.value
         current.selectedThread?.id?.let { threadId ->
@@ -2105,6 +2229,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
     companion object {
         private const val CACHE_WRITE_DELAY_MILLIS = 650L
         private const val ACTIVE_THREAD_SYNC_INTERVAL_MILLIS = 8_000L
+        private const val SMOOTH_STREAM_TICK_MILLIS = 28L
         private const val COMPLETED_THREAD_SYNC_DELAY_MILLIS = 350L
         private const val SUBMISSION_RECONCILE_DELAY_MILLIS = 1_000L
         private const val SUBMISSION_RECONCILE_ATTEMPTS = 2

@@ -2326,17 +2326,26 @@ private fun MessageBubble(
                 ),
             ) {
                 if (message.text.isNotBlank()) {
-                    MarkdownText(
-                        markdown = message.text,
-                        color = bubbleContentColor,
-                        linkColor = if (isUser && !isFailed) {
-                            MaterialTheme.colorScheme.primaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.primary
-                        },
-                        fontSizeSp = fontSizeSp,
-                        compact = compact,
-                    )
+                    if (message.isStreaming && !isUser) {
+                        Text(
+                            text = message.text,
+                            color = bubbleContentColor,
+                            fontSize = fontSizeSp.sp,
+                            lineHeight = (fontSizeSp * if (compact) 1.08f else 1.16f).sp,
+                        )
+                    } else {
+                        MarkdownText(
+                            markdown = message.text,
+                            color = bubbleContentColor,
+                            linkColor = if (isUser && !isFailed) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                            fontSizeSp = fontSizeSp,
+                            compact = compact,
+                        )
+                    }
                 }
                 if (message.attachments.isNotEmpty()) {
                     if (message.text.isNotBlank()) Spacer(Modifier.height(10.dp))
