@@ -24,6 +24,7 @@ flowchart LR
     Phone[Android · Codex Pocket] -->|Tailscale| Bridge[Mac · Private Bridge]
     Bridge --> Server[Codex App Server]
     Desktop[ChatGPT Desktop] --> Server
+    Phone -->|Tailscale 点对点直连| Remote[远程电脑 · Direct Remote]
 ```
 
 ## 功能
@@ -38,7 +39,7 @@ flowchart LR
 - 选择模型、思考强度、Default / Plan、Goal 与 Fast 模式。
 - 设置只读、工作区或完全访问权限；初始默认是完全访问。
 - 管理自动化任务、查看账户用量，并接收完成通知与震动。
-- 在同一个 APK 中选择并远程控制 Workstation 或 Agilex，支持触控、软键盘、缩放和自动重连。
+- 在同一个 APK 中直连并控制 Workstation、Agilex 或 RSJ PC，支持触控、软键盘、缩放、画质选择和自动重连。
 - 支持 Android 全面屏侧滑返回：聊天返回任务列表，远程桌面返回设备列表；根页面需连续返回两次才退到后台。
 
 ## 快速开始
@@ -78,7 +79,7 @@ bridge/data/config.json
 APK 会生成到：
 
 ```text
-outputs/codex-pocket-0.16.5.apk
+outputs/codex-pocket-0.16.6.apk
 ```
 
 也可以在手机浏览器打开下面的私有下载页：
@@ -100,14 +101,18 @@ APK 接口支持 HTTP Range 与断点续传；移动网络中断后可直接在�
 
 ### 4. 远程桌面（可选）
 
-首页的“远程桌面”入口默认列出 `workstation` 和 `agilex`。Bridge 只允许
-`bridge/src/remote-desktop.mjs` 中明确列出的 SSH 主机，并通过 SSH 标准输入输出
-连接远端的 `127.0.0.1:5900`；VNC 端口无需对局域网或公网开放。
+首页的“远程桌面”入口列出 `workstation`、`agilex` 和 `rsj-pc`。
+屏幕链路为“手机 / 平板 → Tailscale → 目标电脑”，不经过 Mac Bridge。每台目标机
+运行 `bridge/direct-remote/` 中的轻量网关，并只绑定自己的 Tailscale IPv4；网关再
+连接该电脑仅监听 localhost 的 VNC 服务。VNC 和网关端口都无需开放到公网。
 
-远端需要运行仅监听 localhost 的 VNC 服务，Mac 的 `~/.ssh/config` 需要具有对应
-别名和免交互密钥。手机只保存原有 Bridge 配对令牌，不保存远端 SSH 私钥。
+设备地址在 `android/app/src/main/java/com/codexpocket/app/ui/RemoteDesktop.kt` 中明确
+列出。直连网关使用与 Bridge 相同的随机配对令牌，因此手机不保存 VNC 密码或 SSH
+私钥。远程桌面没有 Mac 中转回退路径，避免界面显示“直连”时实际绕行 Mac。
 
-Workstation 当前使用的 systemd 模板位于
+直连网关的用户级 systemd 模板位于
+`bridge/direct-remote/codex-pocket-direct-remote.service`。Workstation 当前使用的
+VNC systemd 模板位于
 `bridge/systemd/x11vnc-workstation.service`。它连接 GDM 的物理 `:0` 桌面，并在
 VNC 客户端接入时唤醒休眠显示器，避免连接成功后只得到黑色画面。
 
@@ -139,7 +144,7 @@ npm --prefix bridge test
 
 ## 安全说明
 
-- Bridge 默认只监听 Mac 的 Tailscale IPv4，并要求随机 Bearer Token。
+- Bridge 与各直连网关只监听各自的 Tailscale IPv4，并要求随机 Bearer Token。
 - `ws://` 流量由 Tailscale 的 WireGuard 隧道加密；不要把端口转发到公网。
 - `bridge/data/`、`android/local.properties`、`outputs/` 和本机专属图标均不会提交。
 - 手机消息和图片位于应用私有缓存目录，总上限 1 GB；清理缓存不会影响 Mac 历史记录。

@@ -1,0 +1,17 @@
+[Unit]
+Description=Codex Pocket direct Tailscale remote desktop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/codex-pocket-remote/env
+ExecStart=/usr/bin/node %h/.local/share/codex-pocket-remote/server.mjs
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+

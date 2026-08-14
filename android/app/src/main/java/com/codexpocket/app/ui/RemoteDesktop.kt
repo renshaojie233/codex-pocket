@@ -58,6 +58,7 @@ internal data class RemoteDesktopDevice(
     val name: String,
     val description: String,
     val routeDescription: String,
+    val directEndpoint: String,
 )
 
 internal val remoteDesktopDevices = listOf(
@@ -65,13 +66,22 @@ internal val remoteDesktopDevices = listOf(
         id = "workstation",
         name = "Workstation",
         description = "Ubuntu 工作站 · 物理桌面",
-        routeDescription = "通过 SSH 连接本机 VNC",
+        routeDescription = "Tailscale 直连 · 不经过 Mac",
+        directEndpoint = "http://100.115.211.82:8790",
     ),
     RemoteDesktopDevice(
         id = "agilex",
         name = "Agilex",
         description = "Agilex 电脑 · GNOME 桌面",
-        routeDescription = "通过 Tailscale 与 SSH 安全连接",
+        routeDescription = "Tailscale 直连 · 不经过 Mac",
+        directEndpoint = "http://100.64.202.98:8790",
+    ),
+    RemoteDesktopDevice(
+        id = "rsj-pc",
+        name = "RSJ PC",
+        description = "rsj-pc · Linux 桌面",
+        routeDescription = "Tailscale 直连 · 不经过 Mac",
+        directEndpoint = "http://100.77.122.104:8790",
     ),
 )
 
@@ -104,7 +114,7 @@ internal fun RemoteDesktopLauncherCard(onClick: () -> Unit) {
             Column(Modifier.weight(1f).padding(horizontal = 13.dp)) {
                 Text("远程桌面", fontWeight = FontWeight.Bold)
                 Text(
-                    "控制 Workstation 或 Agilex",
+                    "直接控制三台 Tailscale 电脑",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -173,9 +183,9 @@ internal fun RemoteDesktopListScreen(
                             tint = MaterialTheme.colorScheme.primary,
                         )
                         Column(Modifier.padding(start = 12.dp)) {
-                            Text("仅通过私有网络连接", fontWeight = FontWeight.SemiBold)
+                            Text("手机 / 平板直接连接目标电脑", fontWeight = FontWeight.SemiBold)
                             Text(
-                                "屏幕数据经 Mac Bridge 和 SSH 转发，不开放公网端口。",
+                                "屏幕数据走 Tailscale 点对点链路，不经过 Mac，也不开放公网端口。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -258,15 +268,14 @@ private fun RemoteDesktopDeviceCard(device: RemoteDesktopDevice, onClick: () -> 
 @Composable
 internal fun RemoteDesktopSessionScreen(
     device: RemoteDesktopDevice,
-    endpoint: String,
     token: String,
     onBack: () -> Unit,
 ) {
     BackHandler(onBack = onBack)
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val url = remember(endpoint, token, device.id) {
-        remoteDesktopClientUrl(endpoint, token, device.id)
+    val url = remember(token, device.id, device.directEndpoint) {
+        remoteDesktopClientUrl(device.directEndpoint, token, device.id)
     }
     var nativeRemoteView by remember { mutableStateOf<NativeRemoteDesktopView?>(null) }
 

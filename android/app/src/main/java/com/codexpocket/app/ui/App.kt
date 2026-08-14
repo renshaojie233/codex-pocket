@@ -219,7 +219,6 @@ fun CodexPocketApp(viewModel: MainViewModel) {
                 else -> if (screen.startsWith("remote-") && remoteDevice != null) {
                     RemoteDesktopSessionScreen(
                         device = remoteDevice,
-                        endpoint = state.endpoint,
                         token = state.token,
                         onBack = { remoteRoute = "list" },
                     )
