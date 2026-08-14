@@ -155,9 +155,10 @@
         // first noVNC layout pass. Toggle scaling after the host has its real
         // size so the canvas does not remain at CSS 0 × 0.
         rfb.scaleViewport = false;
-        requestAnimationFrame(() => {
-          if (rfb) rfb.scaleViewport = scaleToFit;
-        });
+        // Do this synchronously. HyperOS WebView may throttle or skip the
+        // requestAnimationFrame callback while a software-layer WebView is
+        // settling, which leaves the canvas at its 1920 × 1080 native size.
+        rfb.scaleViewport = scaleToFit;
       }, delay);
     }
 
