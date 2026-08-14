@@ -6,8 +6,17 @@ import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+import { sunshineResponseSucceeded } from "../direct-remote/sunshine-response.mjs";
 
 const bridgeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+test("accepts Sunshine pairing success in boolean and string form", () => {
+  assert.equal(sunshineResponseSucceeded({ status: true }), true);
+  assert.equal(sunshineResponseSucceeded({ status: "true" }), true);
+  assert.equal(sunshineResponseSucceeded({ status: false }), false);
+  assert.equal(sunshineResponseSucceeded({ status: "false" }), false);
+  assert.equal(sunshineResponseSucceeded(null), false);
+});
 
 test("keeps the adaptive remote client script syntactically valid", () => {
   const html = readFileSync(resolve(bridgeRoot, "src", "remote-client.html"), "utf8");

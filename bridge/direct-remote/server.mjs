@@ -12,6 +12,7 @@ import tls from "node:tls";
 import { dirname, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { sunshineResponseSucceeded } from "./sunshine-response.mjs";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const clientTemplate = readFileSync(
@@ -216,7 +217,7 @@ async function serveExtremePair(req, res) {
       authenticated: true,
       body: { pin, name: String(body?.name || "Codex Stream").slice(0, 80) },
     });
-    if (result?.status !== true) {
+    if (!sunshineResponseSucceeded(result)) {
       json(res, 409, { ok: false, error: "Sunshine did not accept this pairing PIN" });
       return;
     }
