@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import net from "node:net";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
@@ -7,6 +8,19 @@ import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 
 const bridgeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+test("keeps the adaptive remote client script syntactically valid", () => {
+  const html = readFileSync(resolve(bridgeRoot, "src", "remote-client.html"), "utf8");
+  const source = html.match(/<script type="module">([\s\S]*?)<\/script>/)?.[1]
+    .replace(/^\s*import RFB[^\n]*$/m, "const RFB = class {};")
+    .replace("__DEVICE_JSON__", JSON.stringify({ id: "test", name: "Test" }))
+    .replace("__TOKEN_JSON__", JSON.stringify("token"))
+    .replace("__PASSWORD_JSON__", JSON.stringify("password"));
+  assert.ok(source);
+  assert.doesNotThrow(() => Function(source));
+  assert.match(source, /low-latency/);
+  assert.match(source, /power-save/);
+});
 
 async function listen(server, port = 0) {
   await new Promise((resolveListen, reject) => {
@@ -84,4 +98,3 @@ test("proxies an authenticated direct WebSocket to local VNC", async t => {
   });
   assert.equal(handshake, "RFB 003.008\n");
 });
-

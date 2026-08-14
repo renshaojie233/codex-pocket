@@ -44,7 +44,7 @@ internal class NativeRemoteDesktopView(
     private val inputPanel = LinearLayout(context)
     private val input = EditText(context)
     private val preferences = context.getSharedPreferences(QUALITY_PREFERENCES, Context.MODE_PRIVATE)
-    private lateinit var qualityButton: TextView
+    private lateinit var displayButton: TextView
     private lateinit var floatingControls: LinearLayout
     private lateinit var floatingToggle: TextView
     private val floatingActionButtons = mutableListOf<View>()
@@ -54,6 +54,8 @@ internal class NativeRemoteDesktopView(
     private var decodedFrameReported = false
     private var qualityMode = preferences.getString(QUALITY_MODE_KEY, QUALITY_AUTO)
         ?.takeIf(QUALITY_MODES::contains) ?: QUALITY_AUTO
+    private var frameMode = preferences.getString(FRAME_MODE_KEY, FRAME_SMART)
+        ?.takeIf(FRAME_MODES::contains) ?: FRAME_SMART
     private var floatingControlsExpanded = false
     private var active = true
 
@@ -108,7 +110,7 @@ internal class NativeRemoteDesktopView(
                 ): Boolean = request.url.host != expectedHost
 
                 override fun onPageFinished(view: WebView, url: String) {
-                    applyQualityMode()
+                    applyDisplaySettings()
                 }
             }
             addJavascriptInterface(nativeBridge, NATIVE_FRAME_INTERFACE)
@@ -194,14 +196,14 @@ internal class NativeRemoteDesktopView(
                 evaluate("window.codexPocketNativeCtrlAltDelete?.()")
                 setFloatingControlsExpanded(false)
             }
-        qualityButton = nativeButton(qualityButtonLabel(), dp(64)) {
-            showQualityMenu(qualityButton)
+        displayButton = nativeButton("画面", dp(64)) {
+            showDisplayMenu(displayButton)
         }
         val reconnectButton = nativeButton("重连", dp(64)) {
             reconnect()
             setFloatingControlsExpanded(false)
         }
-        floatingActionButtons += listOf(keyboardButton, cadButton, qualityButton, reconnectButton)
+        floatingActionButtons += listOf(keyboardButton, cadButton, displayButton, reconnectButton)
         floatingActionButtons.forEach(floatingControls::addView)
         attachFloatingDragGesture()
         setFloatingControlsExpanded(false)
@@ -317,18 +319,35 @@ internal class NativeRemoteDesktopView(
         input.text?.clear()
     }
 
-    private fun showQualityMenu(anchor: View) {
+    private fun showDisplayMenu(anchor: View) {
         PopupMenu(context, anchor).apply {
-            QUALITY_OPTIONS.forEach { (mode, label) ->
-                menu.add(label).apply {
+            QUALITY_OPTIONS.forEachIndexed { index, (mode, label) ->
+                menu.add(QUALITY_MENU_GROUP, QUALITY_MENU_ID_BASE + index, index, "清晰度 · $label").apply {
                     isCheckable = true
                     isChecked = qualityMode == mode
                 }
             }
+            FRAME_OPTIONS.forEachIndexed { index, (mode, label) ->
+                menu.add(
+                    FRAME_MENU_GROUP,
+                    FRAME_MENU_ID_BASE + index,
+                    QUALITY_OPTIONS.size + index,
+                    "刷新 · $label",
+                ).apply {
+                    isCheckable = true
+                    isChecked = frameMode == mode
+                }
+            }
+            menu.setGroupCheckable(QUALITY_MENU_GROUP, true, true)
+            menu.setGroupCheckable(FRAME_MENU_GROUP, true, true)
             setOnMenuItemClickListener { item ->
-                val selected = QUALITY_OPTIONS.firstOrNull { it.second == item.title.toString() }
-                    ?: return@setOnMenuItemClickListener false
-                setQualityMode(selected.first)
+                when (item.groupId) {
+                    QUALITY_MENU_GROUP -> QUALITY_OPTIONS.getOrNull(item.itemId - QUALITY_MENU_ID_BASE)
+                        ?.let { setQualityMode(it.first) }
+                    FRAME_MENU_GROUP -> FRAME_OPTIONS.getOrNull(item.itemId - FRAME_MENU_ID_BASE)
+                        ?.let { setFrameMode(it.first) }
+                    else -> return@setOnMenuItemClickListener false
+                }
                 setFloatingControlsExpanded(false)
                 true
             }
@@ -340,19 +359,21 @@ internal class NativeRemoteDesktopView(
         if (mode !in QUALITY_MODES) return
         qualityMode = mode
         preferences.edit().putString(QUALITY_MODE_KEY, mode).apply()
-        if (::qualityButton.isInitialized) qualityButton.text = qualityButtonLabel()
-        applyQualityMode()
+        applyDisplaySettings()
     }
 
-    private fun qualityButtonLabel(): String = when (qualityMode) {
-        QUALITY_SMOOTH -> "流畅"
-        QUALITY_HIGH -> "高清"
-        QUALITY_ORIGINAL -> "原始"
-        else -> "自动"
+    private fun setFrameMode(mode: String) {
+        if (mode !in FRAME_MODES) return
+        frameMode = mode
+        preferences.edit().putString(FRAME_MODE_KEY, mode).apply()
+        applyDisplaySettings()
     }
 
-    private fun applyQualityMode() {
-        evaluate("window.codexPocketNativeSetQuality?.(${JSONObject.quote(qualityMode)})")
+    private fun applyDisplaySettings() {
+        evaluate(
+            "window.codexPocketNativeSetQuality?.(${JSONObject.quote(qualityMode)});" +
+                "window.codexPocketNativeSetFrameMode?.(${JSONObject.quote(frameMode)})",
+        )
     }
 
     fun load(url: String) {
@@ -409,48 +430,68 @@ internal class NativeRemoteDesktopView(
         @Volatile private var enabled = true
 
         @JavascriptInterface
+        fun canAcceptFrame(): Boolean = enabled && !decoding.get()
+
+        @JavascriptInterface
         fun onFrame(
             encoded: String,
             frameWidth: Int,
             frameHeight: Int,
             @Suppress("UNUSED_PARAMETER") desktopWidth: Int,
             @Suppress("UNUSED_PARAMETER") desktopHeight: Int,
-        ) {
-            if (!enabled || frameWidth <= 0 || frameHeight <= 0 || !decoding.compareAndSet(false, true)) return
+        ): Boolean {
+            if (!enabled || frameWidth <= 0 || frameHeight <= 0 || !decoding.compareAndSet(false, true)) {
+                return false
+            }
             try {
                 val comma = encoded.indexOf(',')
                 val payload = if (comma >= 0) encoded.substring(comma + 1) else encoded
                 val bytes = Base64.decode(payload, Base64.DEFAULT)
-                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return
-                frameView.post {
-                    if (!active || !enabled) {
-                        bitmap.recycle()
-                        return@post
-                    }
-                    val previous = currentBitmap
-                    currentBitmap = bitmap
-                    frameView.setImageBitmap(bitmap)
-                    statusView.visibility = View.GONE
-                    if (!decodedFrameReported) {
-                        decodedFrameReported = true
-                        evaluate(
-                            "window.codexPocketNativeFrameDisplayed?.(${bitmap.width},${bitmap.height})",
-                        )
-                    }
-                    if (previous != null && previous !== bitmap) {
-                        frameView.postDelayed({
-                            if (previous !== currentBitmap && !previous.isRecycled) previous.recycle()
-                        }, OLD_FRAME_RECYCLE_DELAY_MILLIS)
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                if (bitmap == null) {
+                    decoding.set(false)
+                    return false
+                }
+                val posted = frameView.post {
+                    try {
+                        if (!active || !enabled) {
+                            bitmap.recycle()
+                            return@post
+                        }
+                        val previous = currentBitmap
+                        currentBitmap = bitmap
+                        frameView.setImageBitmap(bitmap)
+                        statusView.visibility = View.GONE
+                        if (!decodedFrameReported) {
+                            decodedFrameReported = true
+                            evaluate(
+                                "window.codexPocketNativeFrameDisplayed?.(${bitmap.width},${bitmap.height})",
+                            )
+                        }
+                        if (previous != null && previous !== bitmap) {
+                            frameView.postDelayed({
+                                if (previous !== currentBitmap && !previous.isRecycled) previous.recycle()
+                            }, OLD_FRAME_RECYCLE_DELAY_MILLIS)
+                        }
+                    } finally {
+                        // Keep the decoder busy until this frame is actually displayed,
+                        // so newer frames replace time rather than building a UI queue.
+                        decoding.set(false)
                     }
                 }
+                if (!posted) {
+                    bitmap.recycle()
+                    decoding.set(false)
+                }
+                return posted
             } catch (error: RuntimeException) {
+                decoding.set(false)
                 statusView.post {
                     if (!active || !enabled) return@post
                     statusView.text = "原生画面解码失败，正在重试…"
                     statusView.visibility = View.VISIBLE
                 }
-            } finally {
-                decoding.set(false)
+                return false
             }
         }
 
@@ -463,7 +504,7 @@ internal class NativeRemoteDesktopView(
                     if (connected) Color.rgb(169, 242, 204) else Color.rgb(216, 216, 229),
                 )
                 if (!connected) statusView.visibility = View.VISIBLE
-                if (connected) applyQualityMode()
+                if (connected) applyDisplaySettings()
             }
         }
 
@@ -474,19 +515,35 @@ internal class NativeRemoteDesktopView(
 
     private companion object {
         const val NATIVE_FRAME_INTERFACE = "CodexPocketNativeFrame"
-        const val OLD_FRAME_RECYCLE_DELAY_MILLIS = 750L
+        const val OLD_FRAME_RECYCLE_DELAY_MILLIS = 200L
         const val QUALITY_PREFERENCES = "remote-desktop"
         const val QUALITY_MODE_KEY = "quality-mode"
+        const val FRAME_MODE_KEY = "frame-mode"
         const val QUALITY_AUTO = "auto"
         const val QUALITY_SMOOTH = "smooth"
         const val QUALITY_HIGH = "high"
         const val QUALITY_ORIGINAL = "original"
+        const val FRAME_SMART = "smart"
+        const val FRAME_LOW_LATENCY = "low-latency"
+        const val FRAME_BALANCED = "balanced"
+        const val FRAME_POWER_SAVE = "power-save"
+        const val QUALITY_MENU_GROUP = 1
+        const val FRAME_MENU_GROUP = 2
+        const val QUALITY_MENU_ID_BASE = 100
+        const val FRAME_MENU_ID_BASE = 200
         val QUALITY_MODES = setOf(QUALITY_AUTO, QUALITY_SMOOTH, QUALITY_HIGH, QUALITY_ORIGINAL)
+        val FRAME_MODES = setOf(FRAME_SMART, FRAME_LOW_LATENCY, FRAME_BALANCED, FRAME_POWER_SAVE)
         val QUALITY_OPTIONS = listOf(
             QUALITY_AUTO to "自动（按屏幕）",
             QUALITY_SMOOTH to "流畅 960 × 540",
             QUALITY_HIGH to "高清 1280 × 720",
             QUALITY_ORIGINAL to "原始 1920 × 1080",
+        )
+        val FRAME_OPTIONS = listOf(
+            FRAME_SMART to "智能（操作 20 帧）",
+            FRAME_LOW_LATENCY to "低延迟 20 帧",
+            FRAME_BALANCED to "均衡 10 帧",
+            FRAME_POWER_SAVE to "省电 4 帧",
         )
     }
 }

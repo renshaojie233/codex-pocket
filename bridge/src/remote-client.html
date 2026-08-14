@@ -83,10 +83,15 @@
     let scaleToFit = true;
     let scaleRefreshTimer = 0;
     let mirrorTimer = 0;
+    let mirrorTimerDueAt = 0;
     let mirrorBusy = false;
     let mirrorUrl = "";
+    let mirrorRunning = false;
+    let lastInteractionAt = performance.now();
+    let lastMirrorAt = 0;
     let nativeFrameReported = false;
     let nativeQualityMode = "auto";
+    let nativeFrameMode = "smart";
 
     function nativeFrameBridge() {
       const bridge = window.CodexPocketNativeFrame;
@@ -105,6 +110,46 @@
         default:
           return Math.min(canvas.width, 1920, Math.round(cssWidth * devicePixelRatio));
       }
+    }
+
+    function nativeFrameJpegQuality() {
+      switch (nativeQualityMode) {
+        case "smooth": return 0.72;
+        case "high": return 0.80;
+        case "original": return 0.86;
+        default: return 0.82;
+      }
+    }
+
+    function mirrorInterval() {
+      switch (nativeFrameMode) {
+        case "low-latency": return 50;
+        case "balanced": return 100;
+        case "power-save": return 250;
+        default:
+          return performance.now() - lastInteractionAt < 2_000 ? 50 : 125;
+      }
+    }
+
+    function scheduleMirror(delay = mirrorInterval()) {
+      if (!mirrorRunning) return;
+      const normalizedDelay = Math.max(0, delay);
+      const dueAt = performance.now() + normalizedDelay;
+      if (mirrorTimer && mirrorTimerDueAt <= dueAt) return;
+      clearTimeout(mirrorTimer);
+      mirrorTimerDueAt = dueAt;
+      mirrorTimer = setTimeout(() => {
+        mirrorTimer = 0;
+        mirrorTimerDueAt = 0;
+        updateMirror();
+        scheduleMirror();
+      }, normalizedDelay);
+    }
+
+    function markInteraction() {
+      const now = performance.now();
+      lastInteractionAt = now;
+      if (mirrorRunning && now - lastMirrorAt >= 40) scheduleMirror(0);
     }
 
     function report(event, details = {}) {
@@ -226,8 +271,14 @@
     function updateMirror() {
       const nativeBridge = nativeFrameBridge();
       if ((!useFrameMirror && !nativeBridge) || mirrorBusy || document.hidden) return;
+      if (
+        nativeBridge &&
+        typeof nativeBridge.canAcceptFrame === "function" &&
+        !nativeBridge.canAcceptFrame()
+      ) return;
       const canvas = screen.querySelector("canvas");
       if (!canvas || canvas.width <= 0 || canvas.height <= 0) return;
+      lastMirrorAt = performance.now();
       applyScale();
       const bounds = canvas.getBoundingClientRect();
       const cssWidth = Math.max(1, Math.round(bounds.width || innerWidth));
@@ -241,9 +292,15 @@
       context.drawImage(canvas, 0, 0, targetWidth, targetHeight);
       if (nativeBridge) {
         try {
-          const encoded = mirrorBuffer.toDataURL("image/jpeg", 0.9);
-          nativeBridge.onFrame(encoded, targetWidth, targetHeight, canvas.width, canvas.height);
-          if (!nativeFrameReported) {
+          const encoded = mirrorBuffer.toDataURL("image/jpeg", nativeFrameJpegQuality());
+          const accepted = nativeBridge.onFrame(
+            encoded,
+            targetWidth,
+            targetHeight,
+            canvas.width,
+            canvas.height,
+          );
+          if (accepted && !nativeFrameReported) {
             nativeFrameReported = true;
             report("native-frame", {
               canvas: { width: canvas.width, height: canvas.height },
@@ -252,6 +309,7 @@
                 height: targetHeight,
                 encodedBytes: encoded.length,
                 qualityMode: nativeQualityMode,
+                frameMode: nativeFrameMode,
               },
             });
           }
@@ -275,15 +333,20 @@
     }
 
     function startMirror() {
-      clearInterval(mirrorTimer);
+      clearTimeout(mirrorTimer);
+      mirrorTimer = 0;
+      mirrorTimerDueAt = 0;
       if (!useFrameMirror && !nativeFrameBridge()) return;
-      updateMirror();
-      mirrorTimer = setInterval(updateMirror, 250);
+      mirrorRunning = true;
+      lastInteractionAt = performance.now();
+      scheduleMirror(0);
     }
 
     function stopMirror() {
-      clearInterval(mirrorTimer);
+      mirrorRunning = false;
+      clearTimeout(mirrorTimer);
       mirrorTimer = 0;
+      mirrorTimerDueAt = 0;
       screen.classList.remove("mirror-active");
     }
 
@@ -339,6 +402,7 @@
 
     function sendText(text) {
       if (!rfb || !text) return;
+      markInteraction();
       for (const character of text) {
         const point = character.codePointAt(0);
         if (point > 0xff) {
@@ -368,6 +432,7 @@
       keyboardInput.value = "";
     });
     keyboardInput.addEventListener("keydown", event => {
+      markInteraction();
       const special = {
         Enter: 0xff0d, Backspace: 0xff08, Tab: 0xff09, Escape: 0xff1b,
         ArrowLeft: 0xff51, ArrowUp: 0xff52, ArrowRight: 0xff53, ArrowDown: 0xff54,
@@ -379,7 +444,14 @@
         sendKeysym(special, event.code || null);
       }
     });
-    document.getElementById("ctrlAltDelButton").addEventListener("click", () => rfb?.sendCtrlAltDel());
+    screen.addEventListener("pointerdown", markInteraction, { capture: true, passive: true });
+    screen.addEventListener("pointermove", markInteraction, { capture: true, passive: true });
+    screen.addEventListener("pointerup", markInteraction, { capture: true, passive: true });
+    screen.addEventListener("wheel", markInteraction, { capture: true, passive: true });
+    document.getElementById("ctrlAltDelButton").addEventListener("click", () => {
+      markInteraction();
+      rfb?.sendCtrlAltDel();
+    });
     document.getElementById("fitButton").addEventListener("click", event => {
       scaleToFit = !scaleToFit;
       refreshScale();
@@ -402,7 +474,15 @@
       if (!allowed.has(mode)) return;
       nativeQualityMode = mode;
       nativeFrameReported = false;
-      updateMirror();
+      scheduleMirror(0);
+    };
+    window.codexPocketNativeSetFrameMode = mode => {
+      const allowed = new Set(["smart", "low-latency", "balanced", "power-save"]);
+      if (!allowed.has(mode)) return;
+      nativeFrameMode = mode;
+      lastInteractionAt = performance.now();
+      nativeFrameReported = false;
+      scheduleMirror(0);
     };
     window.codexPocketNativeFrameDisplayed = (width, height) => {
       report("native-frame-displayed", {
@@ -410,6 +490,7 @@
           width: Number(width) || 0,
           height: Number(height) || 0,
           qualityMode: nativeQualityMode,
+          frameMode: nativeFrameMode,
         },
       });
     };
