@@ -4,7 +4,9 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Color
+import android.net.Uri
 import android.graphics.drawable.GradientDrawable
 import android.util.Base64
 import android.view.Gravity
@@ -24,6 +26,12 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.TextView
+import androidx.webkit.WebMessageCompat
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
 
@@ -36,8 +44,10 @@ import org.json.JSONObject
 @SuppressLint("SetJavaScriptEnabled", "ViewConstructor")
 internal class NativeRemoteDesktopView(
     context: Context,
-    private val expectedHost: String,
+    private val expectedOrigin: String,
+    private val onFullscreenRequest: (Boolean) -> Unit,
 ) : FrameLayout(context) {
+    private val expectedHost = Uri.parse(expectedOrigin).host.orEmpty()
     private val webView = WebView(context)
     private val frameView = ImageView(context)
     private val statusView = TextView(context)
@@ -57,6 +67,7 @@ internal class NativeRemoteDesktopView(
     private var frameMode = preferences.getString(FRAME_MODE_KEY, FRAME_SMART)
         ?.takeIf(FRAME_MODES::contains) ?: FRAME_SMART
     private var floatingControlsExpanded = false
+    private var fullscreen = false
     private var active = true
 
     init {
@@ -114,6 +125,29 @@ internal class NativeRemoteDesktopView(
                 }
             }
             addJavascriptInterface(nativeBridge, NATIVE_FRAME_INTERFACE)
+            configureBinaryFrameChannel()
+        }
+    }
+
+    private fun configureBinaryFrameChannel() {
+        if (
+            !WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) ||
+            !WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER)
+        ) {
+            return
+        }
+        WebViewCompat.addWebMessageListener(
+            webView,
+            BINARY_FRAME_INTERFACE,
+            setOf(expectedOrigin),
+        ) { _, message, _, isMainFrame, _ ->
+            if (
+                active &&
+                isMainFrame &&
+                message.type == WebMessageCompat.TYPE_ARRAY_BUFFER
+            ) {
+                nativeBridge.onBinaryFrame(message.arrayBuffer)
+            }
         }
     }
 
@@ -338,6 +372,15 @@ internal class NativeRemoteDesktopView(
                     isChecked = frameMode == mode
                 }
             }
+            menu.add(
+                DISPLAY_MENU_GROUP,
+                FULLSCREEN_MENU_ID,
+                QUALITY_OPTIONS.size + FRAME_OPTIONS.size,
+                if (fullscreen) "退出全屏" else "全屏显示",
+            ).apply {
+                isCheckable = true
+                isChecked = fullscreen
+            }
             menu.setGroupCheckable(QUALITY_MENU_GROUP, true, true)
             menu.setGroupCheckable(FRAME_MENU_GROUP, true, true)
             setOnMenuItemClickListener { item ->
@@ -346,6 +389,10 @@ internal class NativeRemoteDesktopView(
                         ?.let { setQualityMode(it.first) }
                     FRAME_MENU_GROUP -> FRAME_OPTIONS.getOrNull(item.itemId - FRAME_MENU_ID_BASE)
                         ?.let { setFrameMode(it.first) }
+                    DISPLAY_MENU_GROUP -> if (item.itemId == FULLSCREEN_MENU_ID) {
+                        fullscreen = !fullscreen
+                        onFullscreenRequest(fullscreen)
+                    }
                     else -> return@setOnMenuItemClickListener false
                 }
                 setFloatingControlsExpanded(false)
@@ -390,6 +437,10 @@ internal class NativeRemoteDesktopView(
         webView.loadUrl(currentUrl)
     }
 
+    fun syncFullscreen(value: Boolean) {
+        fullscreen = value
+    }
+
     fun onResumeRemote() {
         if (!active) return
         webView.onResume()
@@ -406,6 +457,12 @@ internal class NativeRemoteDesktopView(
         if (!active) return
         active = false
         nativeBridge.close()
+        if (
+            WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER)
+        ) {
+            WebViewCompat.removeWebMessageListener(webView, BINARY_FRAME_INTERFACE)
+        }
         webView.removeJavascriptInterface(NATIVE_FRAME_INTERFACE)
         webView.stopLoading()
         webView.loadUrl("about:blank")
@@ -427,6 +484,9 @@ internal class NativeRemoteDesktopView(
 
     private inner class NativeFrameBridge {
         private val decoding = AtomicBoolean(false)
+        private val decoderExecutor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "codex-pocket-frame-decoder").apply { isDaemon = true }
+        }
         @Volatile private var enabled = true
 
         @JavascriptInterface
@@ -444,54 +504,141 @@ internal class NativeRemoteDesktopView(
                 return false
             }
             try {
-                val comma = encoded.indexOf(',')
-                val payload = if (comma >= 0) encoded.substring(comma + 1) else encoded
-                val bytes = Base64.decode(payload, Base64.DEFAULT)
-                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                if (bitmap == null) {
-                    decoding.set(false)
-                    return false
-                }
-                val posted = frameView.post {
+                decoderExecutor.execute {
                     try {
-                        if (!active || !enabled) {
-                            bitmap.recycle()
-                            return@post
-                        }
-                        val previous = currentBitmap
-                        currentBitmap = bitmap
-                        frameView.setImageBitmap(bitmap)
-                        statusView.visibility = View.GONE
-                        if (!decodedFrameReported) {
-                            decodedFrameReported = true
-                            evaluate(
-                                "window.codexPocketNativeFrameDisplayed?.(${bitmap.width},${bitmap.height})",
-                            )
-                        }
-                        if (previous != null && previous !== bitmap) {
-                            frameView.postDelayed({
-                                if (previous !== currentBitmap && !previous.isRecycled) previous.recycle()
-                            }, OLD_FRAME_RECYCLE_DELAY_MILLIS)
-                        }
-                    } finally {
-                        // Keep the decoder busy until this frame is actually displayed,
-                        // so newer frames replace time rather than building a UI queue.
-                        decoding.set(false)
+                        val comma = encoded.indexOf(',')
+                        val payload = if (comma >= 0) encoded.substring(comma + 1) else encoded
+                        val bytes = Base64.decode(payload, Base64.DEFAULT)
+                        decodeAndDisplay(
+                            bytes,
+                            FramePatch(frameWidth, frameHeight, 0, 0, frameWidth, frameHeight),
+                        )
+                    } catch (error: RuntimeException) {
+                        frameFailure()
                     }
                 }
-                if (!posted) {
-                    bitmap.recycle()
-                    decoding.set(false)
-                }
-                return posted
+                return true
             } catch (error: RuntimeException) {
-                decoding.set(false)
-                statusView.post {
-                    if (!active || !enabled) return@post
-                    statusView.text = "原生画面解码失败，正在重试…"
-                    statusView.visibility = View.VISIBLE
-                }
+                frameFailure()
                 return false
+            }
+        }
+
+        fun onBinaryFrame(packet: ByteArray) {
+            if (!enabled || packet.size <= BINARY_FRAME_HEADER_SIZE || packet.size > MAX_FRAME_PACKET_SIZE) return
+            if (!decoding.compareAndSet(false, true)) return
+            try {
+                val buffer = ByteBuffer.wrap(packet).order(ByteOrder.BIG_ENDIAN)
+                if (buffer.int != BINARY_FRAME_MAGIC || buffer.get().toInt() != BINARY_FRAME_VERSION) {
+                    decoding.set(false)
+                    return
+                }
+                buffer.get() // flags, reserved for future codecs
+                buffer.short
+                val frameWidth = buffer.int
+                val frameHeight = buffer.int
+                val patchX = buffer.int
+                val patchY = buffer.int
+                val patchWidth = buffer.int
+                val patchHeight = buffer.int
+                buffer.int // source desktop width
+                buffer.int // source desktop height
+                buffer.int // sequence number
+                val patch = FramePatch(frameWidth, frameHeight, patchX, patchY, patchWidth, patchHeight)
+                if (!patch.isValid() || buffer.remaining() <= 0) {
+                    decoding.set(false)
+                    return
+                }
+                val encoded = ByteArray(buffer.remaining())
+                buffer.get(encoded)
+                decoderExecutor.execute {
+                    try {
+                        decodeAndDisplay(encoded, patch)
+                    } catch (error: RuntimeException) {
+                        frameFailure()
+                    }
+                }
+            } catch (error: RuntimeException) {
+                frameFailure()
+            }
+        }
+
+        private fun decodeAndDisplay(encoded: ByteArray, patch: FramePatch) {
+            val bitmap = BitmapFactory.decodeByteArray(
+                encoded,
+                0,
+                encoded.size,
+                BitmapFactory.Options().apply {
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                    inMutable = true
+                },
+            )
+            if (bitmap == null || bitmap.width != patch.patchWidth || bitmap.height != patch.patchHeight) {
+                bitmap?.recycle()
+                frameFailure()
+                return
+            }
+            val posted = frameView.post { displayDecodedPatch(bitmap, patch) }
+            if (!posted) {
+                bitmap.recycle()
+                decoding.set(false)
+            }
+        }
+
+        private fun displayDecodedPatch(bitmap: Bitmap, patch: FramePatch) {
+            try {
+                if (!active || !enabled) {
+                    bitmap.recycle()
+                    return
+                }
+                val previous = currentBitmap
+                val fullFrame = patch.isFullFrame()
+                val displayed = if (fullFrame) {
+                    currentBitmap = bitmap
+                    frameView.setImageBitmap(bitmap)
+                    bitmap
+                } else if (
+                    previous != null &&
+                    !previous.isRecycled &&
+                    previous.isMutable &&
+                    previous.width == patch.frameWidth &&
+                    previous.height == patch.frameHeight
+                ) {
+                    Canvas(previous).drawBitmap(bitmap, patch.patchX.toFloat(), patch.patchY.toFloat(), null)
+                    bitmap.recycle()
+                    frameView.invalidate()
+                    previous
+                } else {
+                    bitmap.recycle()
+                    evaluate("window.codexPocketRequestFullFrame?.()")
+                    return
+                }
+                statusView.visibility = View.GONE
+                if (!decodedFrameReported) {
+                    decodedFrameReported = true
+                    evaluate(
+                        "window.codexPocketNativeFrameDisplayed?.(${displayed.width},${displayed.height})",
+                    )
+                }
+                if (fullFrame && previous != null && previous !== displayed) {
+                    frameView.postDelayed({
+                        if (previous !== currentBitmap && !previous.isRecycled) previous.recycle()
+                    }, OLD_FRAME_RECYCLE_DELAY_MILLIS)
+                }
+            } finally {
+                // Do not create a queue: the next frame is accepted only after this
+                // patch has reached the ImageView on the UI thread.
+                decoding.set(false)
+            }
+        }
+
+        private fun frameFailure() {
+            decoding.set(false)
+            statusView.post {
+                if (!active || !enabled) return@post
+                statusView.text = "原生画面解码失败，正在重试…"
+                statusView.visibility = View.VISIBLE
+                evaluate("window.codexPocketRequestFullFrame?.()")
             }
         }
 
@@ -510,11 +657,37 @@ internal class NativeRemoteDesktopView(
 
         fun close() {
             enabled = false
+            decoderExecutor.shutdownNow()
         }
+    }
+
+    private data class FramePatch(
+        val frameWidth: Int,
+        val frameHeight: Int,
+        val patchX: Int,
+        val patchY: Int,
+        val patchWidth: Int,
+        val patchHeight: Int,
+    ) {
+        fun isValid(): Boolean =
+            frameWidth in 1..MAX_FRAME_DIMENSION &&
+                frameHeight in 1..MAX_FRAME_DIMENSION &&
+                patchX >= 0 && patchY >= 0 && patchWidth > 0 && patchHeight > 0 &&
+                patchX.toLong() + patchWidth <= frameWidth.toLong() &&
+                patchY.toLong() + patchHeight <= frameHeight.toLong()
+
+        fun isFullFrame(): Boolean =
+            patchX == 0 && patchY == 0 && patchWidth == frameWidth && patchHeight == frameHeight
     }
 
     private companion object {
         const val NATIVE_FRAME_INTERFACE = "CodexPocketNativeFrame"
+        const val BINARY_FRAME_INTERFACE = "CodexPocketBinaryFrame"
+        const val BINARY_FRAME_HEADER_SIZE = 44
+        const val BINARY_FRAME_MAGIC = 0x43505246
+        const val BINARY_FRAME_VERSION = 1
+        const val MAX_FRAME_PACKET_SIZE = 24 * 1024 * 1024
+        const val MAX_FRAME_DIMENSION = 8192
         const val OLD_FRAME_RECYCLE_DELAY_MILLIS = 200L
         const val QUALITY_PREFERENCES = "remote-desktop"
         const val QUALITY_MODE_KEY = "quality-mode"
@@ -529,8 +702,10 @@ internal class NativeRemoteDesktopView(
         const val FRAME_POWER_SAVE = "power-save"
         const val QUALITY_MENU_GROUP = 1
         const val FRAME_MENU_GROUP = 2
+        const val DISPLAY_MENU_GROUP = 3
         const val QUALITY_MENU_ID_BASE = 100
         const val FRAME_MENU_ID_BASE = 200
+        const val FULLSCREEN_MENU_ID = 300
         val QUALITY_MODES = setOf(QUALITY_AUTO, QUALITY_SMOOTH, QUALITY_HIGH, QUALITY_ORIGINAL)
         val FRAME_MODES = setOf(FRAME_SMART, FRAME_LOW_LATENCY, FRAME_BALANCED, FRAME_POWER_SAVE)
         val QUALITY_OPTIONS = listOf(
@@ -540,8 +715,8 @@ internal class NativeRemoteDesktopView(
             QUALITY_ORIGINAL to "原始 1920 × 1080",
         )
         val FRAME_OPTIONS = listOf(
-            FRAME_SMART to "智能（操作 20 帧）",
-            FRAME_LOW_LATENCY to "低延迟 20 帧",
+            FRAME_SMART to "智能（操作 30 帧）",
+            FRAME_LOW_LATENCY to "极速 30 帧",
             FRAME_BALANCED to "均衡 10 帧",
             FRAME_POWER_SAVE to "省电 4 帧",
         )

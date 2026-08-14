@@ -29,7 +29,7 @@ import {
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.16.7";
+const VERSION = "0.16.8";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const remoteClientTemplate = readFileSync(resolve(moduleDir, "remote-client.html"), "utf8");
 const remoteAssetsRoot = realpathSync(resolve(moduleDir, "..", "node_modules", "@novnc", "novnc"));

@@ -79,6 +79,7 @@
     const renderMode = new URLSearchParams(location.search).get("render") || "compat";
     const useFrameMirror = /\bwv\)/i.test(navigator.userAgent) && renderMode !== "hardware";
     const mirrorBuffer = document.createElement("canvas");
+    const nativePatchBuffer = document.createElement("canvas");
     let rfb = null;
     let scaleToFit = true;
     let scaleRefreshTimer = 0;
@@ -92,10 +93,30 @@
     let nativeFrameReported = false;
     let nativeQualityMode = "auto";
     let nativeFrameMode = "smart";
+    let nativeEncodeBusy = false;
+    let pendingDamage = null;
+    let forceFullFrame = true;
+    let lastNativeFrameWidth = 0;
+    let lastNativeFrameHeight = 0;
+    let lastFullFrameAt = 0;
+    let nativeFrameSequence = 0;
+    let performanceReportAt = performance.now();
+    let performanceFrames = 0;
+    let performanceBytes = 0;
+    let performanceSourcePixels = 0;
+    let performanceEncodedPixels = 0;
+    let performanceEncodeMillis = 0;
+    let binaryTransportFailed = false;
 
     function nativeFrameBridge() {
       const bridge = window.CodexPocketNativeFrame;
       return bridge && typeof bridge.onFrame === "function" ? bridge : null;
+    }
+
+    function nativeBinaryFrameBridge() {
+      if (binaryTransportFailed) return null;
+      const bridge = window.CodexPocketBinaryFrame;
+      return bridge && typeof bridge.postMessage === "function" ? bridge : null;
     }
 
     if (nativeFrameBridge()) {
@@ -123,11 +144,11 @@
 
     function mirrorInterval() {
       switch (nativeFrameMode) {
-        case "low-latency": return 50;
+        case "low-latency": return 33;
         case "balanced": return 100;
         case "power-save": return 250;
         default:
-          return performance.now() - lastInteractionAt < 2_000 ? 50 : 125;
+          return performance.now() - lastInteractionAt < 2_000 ? 33 : 125;
       }
     }
 
@@ -268,9 +289,170 @@
       }, delay);
     }
 
+    function mergeDamage(rect) {
+      if (!rect || rect.width <= 0 || rect.height <= 0) return;
+      if (!pendingDamage) {
+        pendingDamage = { ...rect };
+      } else {
+        const right = Math.max(pendingDamage.x + pendingDamage.width, rect.x + rect.width);
+        const bottom = Math.max(pendingDamage.y + pendingDamage.height, rect.y + rect.height);
+        pendingDamage.x = Math.min(pendingDamage.x, rect.x);
+        pendingDamage.y = Math.min(pendingDamage.y, rect.y);
+        pendingDamage.width = right - pendingDamage.x;
+        pendingDamage.height = bottom - pendingDamage.y;
+      }
+      if (mirrorRunning && performance.now() - lastMirrorAt >= 35) scheduleMirror(0);
+    }
+
+    function visibleDisplayDamage(display) {
+      const bounds = display?._damageBounds;
+      const viewport = display?._viewportLoc;
+      if (!bounds || !viewport) return null;
+      let x = bounds.left;
+      let y = bounds.top;
+      let width = bounds.right - x;
+      let height = bounds.bottom - y;
+      let visibleX = x - viewport.x;
+      let visibleY = y - viewport.y;
+      if (visibleX < 0) {
+        width += visibleX;
+        x -= visibleX;
+        visibleX = 0;
+      }
+      if (visibleY < 0) {
+        height += visibleY;
+        y -= visibleY;
+        visibleY = 0;
+      }
+      if (visibleX + width > viewport.w) width = viewport.w - visibleX;
+      if (visibleY + height > viewport.h) height = viewport.h - visibleY;
+      if (width <= 0 || height <= 0) return null;
+      return { x: visibleX, y: visibleY, width, height };
+    }
+
+    function installDamageTracking() {
+      const display = rfb?._display;
+      if (!display || display.__codexPocketDamageTracking) return;
+      const originalFlip = display.flip.bind(display);
+      display.flip = function(fromQueue) {
+        const damage = (this._renderQ.length === 0 || fromQueue)
+          ? visibleDisplayDamage(this)
+          : null;
+        const result = originalFlip(fromQueue);
+        if (damage) mergeDamage(damage);
+        return result;
+      };
+      display.__codexPocketDamageTracking = true;
+    }
+
+    function requestFullFrame() {
+      forceFullFrame = true;
+      scheduleMirror(0);
+    }
+
+    function scaledPatch(damage, canvas, targetWidth, targetHeight) {
+      const full = forceFullFrame || !damage;
+      if (full) {
+        return {
+          x: 0, y: 0, width: targetWidth, height: targetHeight,
+          sourceX: 0, sourceY: 0, sourceWidth: canvas.width, sourceHeight: canvas.height,
+          full: true,
+        };
+      }
+      const scaleX = targetWidth / canvas.width;
+      const scaleY = targetHeight / canvas.height;
+      const x = Math.max(0, Math.floor(damage.x * scaleX));
+      const y = Math.max(0, Math.floor(damage.y * scaleY));
+      const right = Math.min(targetWidth, Math.ceil((damage.x + damage.width) * scaleX));
+      const bottom = Math.min(targetHeight, Math.ceil((damage.y + damage.height) * scaleY));
+      const width = Math.max(1, right - x);
+      const height = Math.max(1, bottom - y);
+      if ((width * height) / (targetWidth * targetHeight) > 0.72) {
+        return {
+          x: 0, y: 0, width: targetWidth, height: targetHeight,
+          sourceX: 0, sourceY: 0, sourceWidth: canvas.width, sourceHeight: canvas.height,
+          full: true,
+        };
+      }
+      return {
+        x, y, width, height,
+        sourceX: x / scaleX,
+        sourceY: y / scaleY,
+        sourceWidth: width / scaleX,
+        sourceHeight: height / scaleY,
+        full: false,
+      };
+    }
+
+    function binaryFramePacket(jpeg, frame, targetWidth, targetHeight, canvas) {
+      const headerSize = 44;
+      const packet = new Uint8Array(headerSize + jpeg.byteLength);
+      const header = new DataView(packet.buffer, 0, headerSize);
+      header.setUint32(0, 0x43505246); // CPRF
+      header.setUint8(4, 1);
+      header.setUint8(5, frame.full ? 1 : 0);
+      header.setUint16(6, 0);
+      header.setUint32(8, targetWidth);
+      header.setUint32(12, targetHeight);
+      header.setUint32(16, frame.x);
+      header.setUint32(20, frame.y);
+      header.setUint32(24, frame.width);
+      header.setUint32(28, frame.height);
+      header.setUint32(32, canvas.width);
+      header.setUint32(36, canvas.height);
+      header.setUint32(40, ++nativeFrameSequence);
+      packet.set(new Uint8Array(jpeg), headerSize);
+      return packet.buffer;
+    }
+
+    function restoreDamage(frame, canvas) {
+      if (frame.full) {
+        forceFullFrame = true;
+      } else {
+        mergeDamage({
+          x: frame.sourceX,
+          y: frame.sourceY,
+          width: frame.sourceWidth,
+          height: frame.sourceHeight,
+        });
+      }
+    }
+
+    function recordFramePerformance(frame, bytes, encodeMillis, targetWidth, targetHeight) {
+      performanceFrames += 1;
+      performanceBytes += bytes;
+      performanceSourcePixels += targetWidth * targetHeight;
+      performanceEncodedPixels += frame.width * frame.height;
+      performanceEncodeMillis += encodeMillis;
+      const now = performance.now();
+      if (now - performanceReportAt < 5_000) return;
+      report("remote-performance", {
+        transport: nativeBinaryFrameBridge() ? "binary-damage" : "base64-full",
+        intervalMillis: Math.round(now - performanceReportAt),
+        frames: performanceFrames,
+        encodedBytes: performanceBytes,
+        averageEncodeMillis: performanceFrames
+          ? Math.round(performanceEncodeMillis / performanceFrames * 10) / 10
+          : 0,
+        encodedPixelRatio: performanceSourcePixels
+          ? Math.round(performanceEncodedPixels / performanceSourcePixels * 1_000) / 1_000
+          : 0,
+        qualityMode: nativeQualityMode,
+        frameMode: nativeFrameMode,
+      });
+      performanceReportAt = now;
+      performanceFrames = 0;
+      performanceBytes = 0;
+      performanceSourcePixels = 0;
+      performanceEncodedPixels = 0;
+      performanceEncodeMillis = 0;
+    }
+
     function updateMirror() {
       const nativeBridge = nativeFrameBridge();
-      if ((!useFrameMirror && !nativeBridge) || mirrorBusy || document.hidden) return;
+      if ((!useFrameMirror && !nativeBridge) || document.hidden) return;
+      if (nativeBridge && nativeEncodeBusy) return;
+      if (!nativeBridge && mirrorBusy) return;
       if (
         nativeBridge &&
         typeof nativeBridge.canAcceptFrame === "function" &&
@@ -286,13 +468,88 @@
         ? Math.max(1, nativeFrameWidth(canvas, cssWidth))
         : Math.max(1, Math.min(1280, cssWidth));
       const targetHeight = Math.max(1, Math.round(targetWidth * canvas.height / canvas.width));
-      if (mirrorBuffer.width !== targetWidth) mirrorBuffer.width = targetWidth;
-      if (mirrorBuffer.height !== targetHeight) mirrorBuffer.height = targetHeight;
-      const context = mirrorBuffer.getContext("2d", { alpha: false });
-      context.drawImage(canvas, 0, 0, targetWidth, targetHeight);
       if (nativeBridge) {
+        if (targetWidth !== lastNativeFrameWidth || targetHeight !== lastNativeFrameHeight) {
+          lastNativeFrameWidth = targetWidth;
+          lastNativeFrameHeight = targetHeight;
+          forceFullFrame = true;
+        }
+        if (!forceFullFrame && !pendingDamage) return;
+        if (performance.now() - lastFullFrameAt > 15_000) forceFullFrame = true;
+        const damage = pendingDamage;
+        const frame = scaledPatch(damage, canvas, targetWidth, targetHeight);
+        pendingDamage = null;
+        forceFullFrame = false;
+        if (nativePatchBuffer.width !== frame.width) nativePatchBuffer.width = frame.width;
+        if (nativePatchBuffer.height !== frame.height) nativePatchBuffer.height = frame.height;
+        const context = nativePatchBuffer.getContext("2d", { alpha: false });
+        context.drawImage(
+          canvas,
+          frame.sourceX, frame.sourceY, frame.sourceWidth, frame.sourceHeight,
+          0, 0, frame.width, frame.height,
+        );
+        const binaryBridge = nativeBinaryFrameBridge();
+        const encodeStartedAt = performance.now();
+        if (binaryBridge) {
+          nativeEncodeBusy = true;
+          nativePatchBuffer.toBlob(blob => {
+            if (!blob) {
+              nativeEncodeBusy = false;
+              restoreDamage(frame, canvas);
+              return;
+            }
+            blob.arrayBuffer().then(jpeg => {
+              try {
+                binaryBridge.postMessage(
+                  binaryFramePacket(jpeg, frame, targetWidth, targetHeight, canvas),
+                );
+                if (frame.full) lastFullFrameAt = performance.now();
+                recordFramePerformance(
+                  frame,
+                  jpeg.byteLength,
+                  performance.now() - encodeStartedAt,
+                  targetWidth,
+                  targetHeight,
+                );
+                if (!nativeFrameReported) {
+                  nativeFrameReported = true;
+                  report("native-frame", {
+                    transport: "binary-damage",
+                    canvas: { width: canvas.width, height: canvas.height },
+                    nativeFrame: {
+                      width: targetWidth,
+                      height: targetHeight,
+                      encodedBytes: jpeg.byteLength,
+                      patch: { x: frame.x, y: frame.y, width: frame.width, height: frame.height },
+                      qualityMode: nativeQualityMode,
+                      frameMode: nativeFrameMode,
+                    },
+                  });
+                }
+              } catch (error) {
+                binaryTransportFailed = true;
+                restoreDamage(frame, canvas);
+                report("native-binary-frame-error", { message: error.message || String(error) });
+              } finally {
+                nativeEncodeBusy = false;
+              }
+            }).catch(error => {
+              nativeEncodeBusy = false;
+              restoreDamage(frame, canvas);
+              report("native-frame-error", { message: error.message || String(error) });
+            });
+          }, "image/jpeg", nativeFrameJpegQuality());
+          return;
+        }
+        // Compatibility fallback for old Android System WebView versions.
+        // It stays full-frame because the legacy JavascriptInterface only
+        // understands complete images.
         try {
-          const encoded = mirrorBuffer.toDataURL("image/jpeg", nativeFrameJpegQuality());
+          if (!frame.full) {
+            forceFullFrame = true;
+            return;
+          }
+          const encoded = nativePatchBuffer.toDataURL("image/jpeg", nativeFrameJpegQuality());
           const accepted = nativeBridge.onFrame(
             encoded,
             targetWidth,
@@ -300,24 +557,28 @@
             canvas.width,
             canvas.height,
           );
-          if (accepted && !nativeFrameReported) {
-            nativeFrameReported = true;
-            report("native-frame", {
-              canvas: { width: canvas.width, height: canvas.height },
-              nativeFrame: {
-                width: targetWidth,
-                height: targetHeight,
-                encodedBytes: encoded.length,
-                qualityMode: nativeQualityMode,
-                frameMode: nativeFrameMode,
-              },
-            });
+          if (!accepted) restoreDamage(frame, canvas);
+          else {
+            lastFullFrameAt = performance.now();
+            recordFramePerformance(
+              frame,
+              encoded.length,
+              performance.now() - encodeStartedAt,
+              targetWidth,
+              targetHeight,
+            );
           }
         } catch (error) {
+          restoreDamage(frame, canvas);
           report("native-frame-error", { message: error.message || String(error) });
         }
+        return;
       }
       if (!useFrameMirror) return;
+      if (mirrorBuffer.width !== targetWidth) mirrorBuffer.width = targetWidth;
+      if (mirrorBuffer.height !== targetHeight) mirrorBuffer.height = targetHeight;
+      const context = mirrorBuffer.getContext("2d", { alpha: false });
+      context.drawImage(canvas, 0, 0, targetWidth, targetHeight);
       mirrorBusy = true;
       mirrorBuffer.toBlob(blob => {
         mirrorBusy = false;
@@ -339,6 +600,8 @@
       if (!useFrameMirror && !nativeFrameBridge()) return;
       mirrorRunning = true;
       lastInteractionAt = performance.now();
+      pendingDamage = null;
+      forceFullFrame = true;
       scheduleMirror(0);
     }
 
@@ -347,7 +610,23 @@
       clearTimeout(mirrorTimer);
       mirrorTimer = 0;
       mirrorTimerDueAt = 0;
+      pendingDamage = null;
+      forceFullFrame = true;
       screen.classList.remove("mirror-active");
+    }
+
+    function applyVncEncodingSettings() {
+      if (!rfb) return;
+      const settings = {
+        smooth: { quality: 4, compression: 3 },
+        high: { quality: 7, compression: 2 },
+        original: { quality: 9, compression: 1 },
+        auto: { quality: 7, compression: 2 },
+      }[nativeQualityMode] || { quality: 7, compression: 2 };
+      rfb.qualityLevel = settings.quality;
+      rfb.compressionLevel = nativeFrameMode === "low-latency"
+        ? Math.min(settings.compression, 1)
+        : settings.compression;
     }
 
     function connect() {
@@ -363,8 +642,8 @@
       rfb.focusOnClick = true;
       rfb.viewOnly = false;
       rfb.showDotCursor = true;
-      rfb.qualityLevel = 6;
-      rfb.compressionLevel = 2;
+      applyVncEncodingSettings();
+      installDamageTracking();
       rfb.addEventListener("connect", () => {
         setStatus(`${device.name} 已连接`, true);
         nativeFrameBridge()?.onStatus?.(`${device.name} 已连接`, true);
@@ -372,6 +651,7 @@
         refreshScale();
         refreshScale(250);
         setTimeout(() => refreshScale(), 1_000);
+        installDamageTracking();
         startMirror();
         report("connected");
         setTimeout(reportCanvas, 1_000);
@@ -473,17 +753,21 @@
       const allowed = new Set(["auto", "smooth", "high", "original"]);
       if (!allowed.has(mode)) return;
       nativeQualityMode = mode;
+      applyVncEncodingSettings();
       nativeFrameReported = false;
+      requestFullFrame();
       scheduleMirror(0);
     };
     window.codexPocketNativeSetFrameMode = mode => {
       const allowed = new Set(["smart", "low-latency", "balanced", "power-save"]);
       if (!allowed.has(mode)) return;
       nativeFrameMode = mode;
+      applyVncEncodingSettings();
       lastInteractionAt = performance.now();
       nativeFrameReported = false;
       scheduleMirror(0);
     };
+    window.codexPocketRequestFullFrame = requestFullFrame;
     window.codexPocketNativeFrameDisplayed = (width, height) => {
       report("native-frame-displayed", {
         nativeFrame: {

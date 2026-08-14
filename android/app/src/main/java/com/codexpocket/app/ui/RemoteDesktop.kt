@@ -1,5 +1,8 @@
 package com.codexpocket.app.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -39,6 +42,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,6 +56,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 internal data class RemoteDesktopDevice(
     val id: String,
@@ -271,13 +278,34 @@ internal fun RemoteDesktopSessionScreen(
     token: String,
     onBack: () -> Unit,
 ) {
-    BackHandler(onBack = onBack)
     val context = LocalContext.current
+    val activity = remember(context) { context.findActivity() }
     val lifecycleOwner = LocalLifecycleOwner.current
     val url = remember(token, device.id, device.directEndpoint) {
         remoteDesktopClientUrl(device.directEndpoint, token, device.id)
     }
     var nativeRemoteView by remember { mutableStateOf<NativeRemoteDesktopView?>(null) }
+    var fullscreen by rememberSaveable { mutableStateOf(false) }
+
+    BackHandler {
+        if (fullscreen) fullscreen = false else onBack()
+    }
+
+    DisposableEffect(activity, fullscreen) {
+        val controller = activity?.let {
+            WindowCompat.getInsetsController(it.window, it.window.decorView)
+        }
+        if (fullscreen) {
+            controller?.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller?.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            controller?.show(WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose {
+            if (fullscreen) controller?.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -301,7 +329,7 @@ internal fun RemoteDesktopSessionScreen(
     Scaffold(
         containerColor = Color(0xFF111217),
         topBar = {
-            TopAppBar(
+            if (!fullscreen) TopAppBar(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回设备列表")
@@ -333,17 +361,26 @@ internal fun RemoteDesktopSessionScreen(
     ) { padding ->
         AndroidView(
             factory = {
-                NativeRemoteDesktopView(context, Uri.parse(url).host.orEmpty()).apply {
+                val uri = Uri.parse(url)
+                val origin = "${uri.scheme}://${uri.encodedAuthority}"
+                NativeRemoteDesktopView(context, origin) { fullscreen = it }.apply {
                     nativeRemoteView = this
                     load(url)
                 }
             },
             update = { view ->
                 if (view !== nativeRemoteView) nativeRemoteView = view
+                view.syncFullscreen(fullscreen)
             },
             modifier = Modifier.fillMaxSize().padding(padding),
         )
     }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 internal fun remoteDesktopClientUrl(endpoint: String, token: String, deviceId: String): String {

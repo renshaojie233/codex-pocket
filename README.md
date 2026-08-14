@@ -80,7 +80,7 @@ bridge/data/config.json
 APK 会生成到：
 
 ```text
-outputs/codex-pocket-0.16.7.apk
+outputs/codex-pocket-0.16.8.apk
 ```
 
 也可以在手机浏览器打开下面的私有下载页：
@@ -106,6 +106,10 @@ APK 接口支持 HTTP Range 与断点续传；移动网络中断后可直接在�
 屏幕链路为“手机 / 平板 → Tailscale → 目标电脑”，不经过 Mac Bridge。每台目标机
 运行 `bridge/direct-remote/` 中的轻量网关，并只绑定自己的 Tailscale IPv4；网关再
 连接该电脑仅监听 localhost 的 VNC 服务。VNC 和网关端口都无需开放到公网。
+
+Android 端默认使用智能 30 帧刷新，并只编码桌面发生变化的区域；支持二进制帧传输、
+原始 1920 × 1080 清晰度和隐藏应用栏及系统栏的全屏显示。打开远程桌面的悬浮工具，
+在“画面”中可分别调整清晰度、刷新策略和全屏状态。
 
 设备地址在 `android/app/src/main/java/com/codexpocket/app/ui/RemoteDesktop.kt` 中明确
 列出。直连网关使用与 Bridge 相同的随机配对令牌，因此手机不保存 VNC 密码或 SSH

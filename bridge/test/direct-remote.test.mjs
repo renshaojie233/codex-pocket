@@ -20,6 +20,9 @@ test("keeps the adaptive remote client script syntactically valid", () => {
   assert.doesNotThrow(() => Function(source));
   assert.match(source, /low-latency/);
   assert.match(source, /power-save/);
+  assert.match(source, /binary-damage/);
+  assert.match(source, /0x43505246/);
+  assert.match(source, /visibleDisplayDamage/);
 });
 
 async function listen(server, port = 0) {

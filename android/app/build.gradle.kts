@@ -19,8 +19,8 @@ android {
         applicationId = "com.codexpocket.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 41
-        versionName = "0.16.7"
+        versionCode = 42
+        versionName = "0.16.8"
 
         buildConfigField(
             "String",
@@ -77,6 +77,7 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    implementation("androidx.webkit:webkit:1.16.0")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
