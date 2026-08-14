@@ -1,4 +1,5 @@
 import { createDecipheriv, timingSafeEqual } from "node:crypto";
+import { spawn } from "node:child_process";
 import {
   createReadStream,
   existsSync,
@@ -23,6 +24,15 @@ const assetsRoot = realpathSync(
   process.env.REMOTE_ASSETS_ROOT || resolve(moduleDir, "node_modules", "@novnc", "novnc"),
 );
 const fixedDesKey = Buffer.from("e84ad660c4721ae0", "hex");
+const userXdotoolRoot = process.env.HOME
+  ? resolve(process.env.HOME, ".local", "share", "codex-pocket-remote", "xdotool")
+  : "";
+const userXdotoolCommand = userXdotoolRoot
+  ? resolve(userXdotoolRoot, "usr", "bin", "xdotool")
+  : "";
+const userXdotoolLibraryPath = userXdotoolRoot
+  ? resolve(userXdotoolRoot, "usr", "lib", "x86_64-linux-gnu")
+  : "";
 
 const config = Object.freeze({
   id: required("REMOTE_ID"),
@@ -37,6 +47,14 @@ const config = Object.freeze({
   sunshineUrl: process.env.SUNSHINE_URL || "",
   sunshineUsername: process.env.SUNSHINE_USERNAME || "codexpocket",
   sunshinePasswordFile: process.env.SUNSHINE_PASSWORD_FILE || "",
+  clipboardCommand: process.env.REMOTE_CLIPBOARD_COMMAND || "xclip",
+  pasteCommand: process.env.REMOTE_PASTE_COMMAND ||
+    (userXdotoolCommand && existsSync(userXdotoolCommand) ? userXdotoolCommand : "xdotool"),
+  pasteLibraryPath: process.env.REMOTE_PASTE_LIBRARY_PATH ||
+    (userXdotoolLibraryPath && existsSync(userXdotoolLibraryPath) ? userXdotoolLibraryPath : ""),
+  display: process.env.REMOTE_DISPLAY || process.env.DISPLAY || ":0",
+  xauthority: process.env.REMOTE_XAUTHORITY || process.env.XAUTHORITY ||
+    `/run/user/${typeof process.getuid === "function" ? process.getuid() : 1000}/gdm/Xauthority`,
 });
 
 function required(name) {
@@ -128,6 +146,123 @@ function readJsonBody(req, maximumBytes = 2048) {
     });
     req.on("error", rejectBody);
   });
+}
+
+function runInputCommand(command, args, input = null) {
+  return new Promise((resolveCommand, rejectCommand) => {
+    const child = spawn(command, args, {
+      env: {
+        ...process.env,
+        DISPLAY: config.display,
+        XAUTHORITY: config.xauthority,
+        ...(config.pasteLibraryPath ? {
+          LD_LIBRARY_PATH: [config.pasteLibraryPath, process.env.LD_LIBRARY_PATH]
+            .filter(Boolean)
+            .join(":"),
+        } : {}),
+      },
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+    const errors = [];
+    let errorBytes = 0;
+    let settled = false;
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) rejectCommand(error);
+      else resolveCommand();
+    };
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(new Error(`${command} timed out`));
+    }, 3_000);
+    child.stderr.on("data", chunk => {
+      if (errorBytes < 8 * 1024) {
+        errors.push(chunk);
+        errorBytes += chunk.length;
+      }
+    });
+    child.once("error", finish);
+    child.once("close", code => {
+      if (code === 0) {
+        finish();
+      } else {
+        const detail = Buffer.concat(errors).toString("utf8").trim();
+        finish(new Error(detail || `${command} exited with code ${code}`));
+      }
+    });
+    child.stdin.end(input == null ? undefined : Buffer.from(input, "utf8"));
+  });
+}
+
+let clipboardOwner = null;
+
+function openClipboardSelection(text) {
+  if (clipboardOwner && !clipboardOwner.killed) {
+    clipboardOwner.kill("SIGTERM");
+  }
+  const child = spawn(config.clipboardCommand, ["-selection", "clipboard", "-in"], {
+    env: {
+      ...process.env,
+      DISPLAY: config.display,
+      XAUTHORITY: config.xauthority,
+    },
+    stdio: ["pipe", "ignore", "pipe"],
+  });
+  clipboardOwner = child;
+  child.stdin.end(Buffer.from(text, "utf8"));
+  child.once("close", () => {
+    if (clipboardOwner === child) clipboardOwner = null;
+  });
+  return new Promise((resolveClipboard, rejectClipboard) => {
+    let settled = false;
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      if (error) rejectClipboard(error);
+      else resolveClipboard();
+    };
+    child.once("error", finish);
+    child.once("spawn", () => {
+      // Give xclip enough time to claim the X11 selection before the terminal
+      // asks first for TARGETS and then for the UTF-8 payload.
+      setTimeout(() => finish(), 75);
+    });
+  });
+}
+
+let textInjectionQueue = Promise.resolve();
+
+function injectCommittedText(text) {
+  const operation = textInjectionQueue
+    .catch(() => {})
+    .then(async () => {
+      // Keep xclip alive after the paste. Terminal clients may make multiple
+      // requests (TARGETS followed by UTF8_STRING) for one paste operation.
+      await openClipboardSelection(text);
+      // Ctrl+Shift+V is GNOME Terminal's explicit paste shortcut and also
+      // works as plain-text paste in the managed Linux desktop applications.
+      // It bypasses the host IME and Sunshine's Ctrl+Shift+U emulation.
+      await runInputCommand(config.pasteCommand, ["key", "--clearmodifiers", "ctrl+shift+v"]);
+    });
+  textInjectionQueue = operation;
+  return operation;
+}
+
+async function serveCommittedText(req, res) {
+  try {
+    const body = await readJsonBody(req, 16 * 1024);
+    const text = typeof body?.text === "string" ? body.text : "";
+    if (!text || Buffer.byteLength(text, "utf8") > 8 * 1024) {
+      json(res, 400, { ok: false, error: "Text must contain 1 to 8192 UTF-8 bytes" });
+      return;
+    }
+    await injectCommittedText(text);
+    json(res, 200, { ok: true, inserted: true });
+  } catch (error) {
+    json(res, 503, { ok: false, error: error.message });
+  }
 }
 
 function sunshineRequest(pathname, { method = "GET", body = null, authenticated = false } = {}) {
@@ -330,6 +465,14 @@ const server = http.createServer((req, res) => {
       json(res, 401, { ok: false, error: "Unauthorized" });
     } else {
       void serveExtremePair(req, res);
+    }
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/remote/extreme/text") {
+    if (!requestTokenMatches(req, url)) {
+      json(res, 401, { ok: false, error: "Unauthorized" });
+    } else {
+      void serveCommittedText(req, res);
     }
     return;
   }

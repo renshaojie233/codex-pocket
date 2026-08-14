@@ -78,6 +78,8 @@ test("proxies an authenticated direct WebSocket to local VNC", async t => {
       VNC_PORT: String(vncPort),
       REMOTE_CLIENT_TEMPLATE: resolve(bridgeRoot, "src", "remote-client.html"),
       REMOTE_ASSETS_ROOT: resolve(bridgeRoot, "node_modules", "@novnc", "novnc"),
+      REMOTE_CLIPBOARD_COMMAND: "/usr/bin/true",
+      REMOTE_PASTE_COMMAND: "/usr/bin/true",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -106,6 +108,37 @@ test("proxies an authenticated direct WebSocket to local VNC", async t => {
     },
   );
   assert.equal(invalidPair.status, 400);
+
+  const unauthorizedText = await fetch(
+    `http://127.0.0.1:${gatewayPort}/remote/extreme/text?token=wrong`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "中文" }),
+    },
+  );
+  assert.equal(unauthorizedText.status, 401);
+
+  const invalidText = await fetch(
+    `http://127.0.0.1:${gatewayPort}/remote/extreme/text?token=test-token`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "" }),
+    },
+  );
+  assert.equal(invalidText.status, 400);
+
+  const insertedText = await fetch(
+    `http://127.0.0.1:${gatewayPort}/remote/extreme/text?token=test-token`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "继续，中文测试123🙂" }),
+    },
+  );
+  assert.equal(insertedText.status, 200);
+  assert.deepEqual(await insertedText.json(), { ok: true, inserted: true });
 
   const page = await fetch(
     `http://127.0.0.1:${gatewayPort}/remote/client?device=test-device&token=test-token`,
