@@ -107,6 +107,10 @@ APK 接口支持 HTTP Range 与断点续传；移动网络中断后可直接在�
 远端需要运行仅监听 localhost 的 VNC 服务，Mac 的 `~/.ssh/config` 需要具有对应
 别名和免交互密钥。手机只保存原有 Bridge 配对令牌，不保存远端 SSH 私钥。
 
+Workstation 当前使用的 systemd 模板位于
+`bridge/systemd/x11vnc-workstation.service`。它连接 GDM 的物理 `:0` 桌面，并在
+VNC 客户端接入时唤醒休眠显示器，避免连接成功后只得到黑色画面。
+
 浏览器 VNC 功能使用 [noVNC](https://github.com/novnc/noVNC)，其核心库采用
 MPL-2.0 许可证，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
