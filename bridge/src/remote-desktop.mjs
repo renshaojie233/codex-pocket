@@ -11,7 +11,7 @@ export const REMOTE_DESKTOPS = Object.freeze({
     description: "Ubuntu 工作站 · 1920 × 1080",
     sshHost: "workstation",
     passwordFile: "/home/ubuntu/.vnc/passwd",
-    wakeCommand: "sudo -n env DISPLAY=:0 XAUTHORITY=/run/user/128/gdm/Xauthority /bin/sh -c 'xset dpms force on; xset s reset; xdotool key Shift_L; xdotool mousemove_relative -- 2 2'",
+    wakeCommand: "sudo -n /usr/local/sbin/codex-pocket-x11vnc-workstation --wake",
   }),
   agilex: Object.freeze({
     id: "agilex",

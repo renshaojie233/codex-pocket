@@ -1,0 +1,46 @@
+#!/bin/sh
+set -eu
+
+find_physical_xorg() {
+    while :; do
+        xorg_pid="$(/usr/bin/pgrep -n Xorg || true)"
+        if [ -n "$xorg_pid" ]; then
+            xorg_args="$(/bin/ps -ww -p "$xorg_pid" -o args= 2>/dev/null || true)"
+            display="$(printf '%s\n' "$xorg_args" | /usr/bin/awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^:[0-9]+$/) { print $i; exit } }')"
+            auth="$(printf '%s\n' "$xorg_args" | /usr/bin/awk '{ for (i = 1; i < NF; i++) if ($i == "-auth") { print $(i + 1); exit } }')"
+            if [ -z "$display" ]; then
+                display_socket="$(/bin/ls -1t /tmp/.X11-unix/X* 2>/dev/null | /usr/bin/head -1 || true)"
+                if [ -n "$display_socket" ]; then
+                    display=":${display_socket##*/X}"
+                fi
+            fi
+            display_number="${display#:}"
+            if [ -n "$display" ] && [ -r "$auth" ] && [ -S "/tmp/.X11-unix/X$display_number" ]; then
+                export DISPLAY="$display"
+                export XAUTHORITY="$auth"
+                return 0
+            fi
+        fi
+        /bin/sleep 1
+    done
+}
+
+find_physical_xorg
+
+if [ "${1:-}" = "--wake" ]; then
+    /usr/bin/xset dpms force on || true
+    /usr/bin/xset s reset || true
+    /usr/bin/xdotool key Shift_L || true
+    /usr/bin/xdotool mousemove_relative -- 2 2 || true
+    exit 0
+fi
+
+exec /usr/bin/x11vnc \
+    -display "$DISPLAY" \
+    -auth "$XAUTHORITY" \
+    -forever -shared -localhost -rfbport 5900 \
+    -rfbauth /home/ubuntu/.vnc/passwd \
+    -input KMBC -repeat -xkb -speeds lan \
+    -wait 20 -defer 10 -threads -input_eagerly \
+    -noxwarppointer -nowait_bog -setdefer -2 \
+    -nowf -noscr -nodpms -nofbpm

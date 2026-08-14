@@ -6,10 +6,9 @@ Wants=display-manager.service
 [Service]
 Type=simple
 User=root
-Environment=DISPLAY=:0
-ExecStart=/usr/bin/x11vnc -display :0 -auth /run/user/128/gdm/Xauthority -forever -shared -localhost -rfbport 5900 -rfbauth /home/ubuntu/.vnc/passwd -input KMBC -repeat -xkb -speeds lan -wait 20 -defer 10 -threads -input_eagerly -noxwarppointer -nowait_bog -setdefer -2 -nowf -noscr -nodpms -nofbpm
+ExecStart=/usr/local/sbin/codex-pocket-x11vnc-workstation
 Restart=always
-RestartSec=3
+RestartSec=2
 
 [Install]
 WantedBy=graphical.target
