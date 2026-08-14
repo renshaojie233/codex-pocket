@@ -82,6 +82,12 @@
     let mirrorTimer = 0;
     let mirrorBusy = false;
     let mirrorUrl = "";
+    let nativeFrameReported = false;
+
+    function nativeFrameBridge() {
+      const bridge = window.CodexPocketNativeFrame;
+      return bridge && typeof bridge.onFrame === "function" ? bridge : null;
+    }
 
     function report(event, details = {}) {
       const payload = {
@@ -200,7 +206,8 @@
     }
 
     function updateMirror() {
-      if (!useFrameMirror || mirrorBusy || document.hidden) return;
+      const nativeBridge = nativeFrameBridge();
+      if ((!useFrameMirror && !nativeBridge) || mirrorBusy || document.hidden) return;
       const canvas = screen.querySelector("canvas");
       if (!canvas || canvas.width <= 0 || canvas.height <= 0) return;
       applyScale();
@@ -211,6 +218,22 @@
       if (mirrorBuffer.height !== targetHeight) mirrorBuffer.height = targetHeight;
       const context = mirrorBuffer.getContext("2d", { alpha: false });
       context.drawImage(canvas, 0, 0, targetWidth, targetHeight);
+      if (nativeBridge) {
+        try {
+          const encoded = mirrorBuffer.toDataURL("image/jpeg", 0.8);
+          nativeBridge.onFrame(encoded, targetWidth, targetHeight, canvas.width, canvas.height);
+          if (!nativeFrameReported) {
+            nativeFrameReported = true;
+            report("native-frame", {
+              canvas: { width: canvas.width, height: canvas.height },
+              nativeFrame: { width: targetWidth, height: targetHeight, encodedBytes: encoded.length },
+            });
+          }
+        } catch (error) {
+          report("native-frame-error", { message: error.message || String(error) });
+        }
+      }
+      if (!useFrameMirror) return;
       mirrorBusy = true;
       mirrorBuffer.toBlob(blob => {
         mirrorBusy = false;
@@ -227,7 +250,7 @@
 
     function startMirror() {
       clearInterval(mirrorTimer);
-      if (!useFrameMirror) return;
+      if (!useFrameMirror && !nativeFrameBridge()) return;
       updateMirror();
       mirrorTimer = setInterval(updateMirror, 250);
     }
@@ -255,6 +278,7 @@
       rfb.compressionLevel = 2;
       rfb.addEventListener("connect", () => {
         setStatus(`${device.name} 已连接`, true);
+        nativeFrameBridge()?.onStatus?.(`${device.name} 已连接`, true);
         rfb.focus();
         refreshScale();
         refreshScale(250);
@@ -268,6 +292,10 @@
       rfb.addEventListener("disconnect", event => {
         stopMirror();
         setStatus(event.detail.clean ? `${device.name} 已断开` : "连接中断，可以点击重连");
+        nativeFrameBridge()?.onStatus?.(
+          event.detail.clean ? `${device.name} 已断开` : "连接中断，可以点击重连",
+          false,
+        );
         report("disconnected", { message: event.detail.clean ? "clean" : "unclean" });
       });
       rfb.addEventListener("securityfailure", event => {
@@ -340,6 +368,14 @@
       try { rfb?.disconnect(); } catch (_) { /* already disconnected */ }
     };
     window.codexPocketRemoteReconnect = connect;
+    window.codexPocketNativeReconnect = connect;
+    window.codexPocketNativeCtrlAltDelete = () => rfb?.sendCtrlAltDel();
+    window.codexPocketNativeSendText = sendText;
+    window.codexPocketNativeFrameDisplayed = (width, height) => {
+      report("native-frame-displayed", {
+        nativeFrame: { width: Number(width) || 0, height: Number(height) || 0 },
+      });
+    };
     window.addEventListener("resize", () => refreshScale(100));
     window.addEventListener("orientationchange", () => refreshScale(250));
     new ResizeObserver(() => {

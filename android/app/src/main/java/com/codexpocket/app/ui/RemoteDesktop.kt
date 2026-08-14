@@ -1,13 +1,6 @@
 package com.codexpocket.app.ui
 
-import android.annotation.SuppressLint
-import android.graphics.Color as AndroidColor
 import android.net.Uri
-import android.view.View
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -261,7 +254,6 @@ private fun RemoteDesktopDeviceCard(device: RemoteDesktopDevice, onClick: () -> 
     }
 }
 
-@SuppressLint("SetJavaScriptEnabled")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun RemoteDesktopSessionScreen(
@@ -276,30 +268,20 @@ internal fun RemoteDesktopSessionScreen(
     val url = remember(endpoint, token, device.id) {
         remoteDesktopClientUrl(endpoint, token, device.id)
     }
-    var webView by remember { mutableStateOf<WebView?>(null) }
+    var nativeRemoteView by remember { mutableStateOf<NativeRemoteDesktopView?>(null) }
 
     DisposableEffect(Unit) {
         onDispose {
-            webView?.apply {
-                stopLoading()
-                loadUrl("about:blank")
-                destroy()
-            }
-            webView = null
+            nativeRemoteView?.destroyRemote()
+            nativeRemoteView = null
         }
     }
 
-    DisposableEffect(lifecycleOwner, webView) {
+    DisposableEffect(lifecycleOwner, nativeRemoteView) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> {
-                    webView?.onResume()
-                    webView?.evaluateJavascript("window.codexPocketRemoteReconnect?.()", null)
-                }
-                Lifecycle.Event.ON_STOP -> {
-                    webView?.evaluateJavascript("window.codexPocketRemoteDisconnect?.()", null)
-                    webView?.onPause()
-                }
+                Lifecycle.Event.ON_START -> nativeRemoteView?.onResumeRemote()
+                Lifecycle.Event.ON_STOP -> nativeRemoteView?.onPauseRemote()
                 else -> Unit
             }
         }
@@ -327,7 +309,7 @@ internal fun RemoteDesktopSessionScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { webView?.loadUrl(url) }) {
+                    IconButton(onClick = { nativeRemoteView?.reconnect() }) {
                         Icon(Icons.Rounded.Refresh, "重新加载远程桌面")
                     }
                 },
@@ -342,38 +324,13 @@ internal fun RemoteDesktopSessionScreen(
     ) { padding ->
         AndroidView(
             factory = {
-                WebView(context).apply {
-                    webView = this
-                    setBackgroundColor(AndroidColor.rgb(17, 18, 23))
-                    // Keep the remote surface in its own hardware layer. HyperOS
-                    // does not composite dynamically generated Canvas/Blob frames
-                    // from a software WebView, even though DOM controls still draw.
-                    setLayerType(View.LAYER_TYPE_HARDWARE, null)
-                    keepScreenOn = true
-                    isFocusable = true
-                    isFocusableInTouchMode = true
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    settings.useWideViewPort = true
-                    settings.loadWithOverviewMode = true
-                    settings.allowFileAccess = false
-                    settings.allowContentAccess = false
-                    settings.setSupportZoom(false)
-                    settings.builtInZoomControls = false
-                    settings.displayZoomControls = false
-                    settings.mediaPlaybackRequiresUserGesture = false
-                    webChromeClient = WebChromeClient()
-                    webViewClient = object : WebViewClient() {
-                        override fun shouldOverrideUrlLoading(
-                            view: WebView,
-                            request: WebResourceRequest,
-                        ): Boolean = request.url.host != Uri.parse(url).host
-                    }
-                    loadUrl(url)
+                NativeRemoteDesktopView(context, Uri.parse(url).host.orEmpty()).apply {
+                    nativeRemoteView = this
+                    load(url)
                 }
             },
             update = { view ->
-                if (view.url == null || view.url == "about:blank") view.loadUrl(url)
+                if (view !== nativeRemoteView) nativeRemoteView = view
             },
             modifier = Modifier.fillMaxSize().padding(padding),
         )
