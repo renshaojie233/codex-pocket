@@ -80,6 +80,7 @@ test("proxies an authenticated direct WebSocket to local VNC", async t => {
       REMOTE_ASSETS_ROOT: resolve(bridgeRoot, "node_modules", "@novnc", "novnc"),
       REMOTE_CLIPBOARD_COMMAND: "/usr/bin/true",
       REMOTE_PASTE_COMMAND: "/usr/bin/true",
+      REMOTE_VERIFY_CLIPBOARD: "0",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

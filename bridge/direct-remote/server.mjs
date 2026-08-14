@@ -52,6 +52,7 @@ const config = Object.freeze({
     (userXdotoolCommand && existsSync(userXdotoolCommand) ? userXdotoolCommand : "xdotool"),
   pasteLibraryPath: process.env.REMOTE_PASTE_LIBRARY_PATH ||
     (userXdotoolLibraryPath && existsSync(userXdotoolLibraryPath) ? userXdotoolLibraryPath : ""),
+  verifyClipboard: process.env.REMOTE_VERIFY_CLIPBOARD !== "0",
   display: process.env.REMOTE_DISPLAY || process.env.DISPLAY || ":0",
   xauthority: process.env.REMOTE_XAUTHORITY || process.env.XAUTHORITY ||
     `/run/user/${typeof process.getuid === "function" ? process.getuid() : 1000}/gdm/Xauthority`,
@@ -201,13 +202,81 @@ function runInputCommand(command, args, input = null) {
   });
 }
 
-let clipboardOwner = null;
+function captureInputCommand(command, args) {
+  return new Promise((resolveCommand, rejectCommand) => {
+    const child = spawn(command, args, {
+      env: {
+        ...process.env,
+        DISPLAY: config.display,
+        XAUTHORITY: config.xauthority,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const output = [];
+    const errors = [];
+    let outputBytes = 0;
+    let errorBytes = 0;
+    let settled = false;
+    const finish = (error, value = "") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) rejectCommand(error);
+      else resolveCommand(value);
+    };
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(new Error(`${command} timed out`));
+    }, 1_000);
+    child.stdout.on("data", chunk => {
+      if (outputBytes < 16 * 1024) {
+        output.push(chunk);
+        outputBytes += chunk.length;
+      }
+    });
+    child.stderr.on("data", chunk => {
+      if (errorBytes < 8 * 1024) {
+        errors.push(chunk);
+        errorBytes += chunk.length;
+      }
+    });
+    child.once("error", error => finish(error));
+    child.once("close", code => {
+      if (code === 0) {
+        finish(null, Buffer.concat(output).toString("utf8"));
+      } else {
+        const detail = Buffer.concat(errors).toString("utf8").trim();
+        finish(new Error(detail || `${command} exited with code ${code}`));
+      }
+    });
+  });
+}
 
-function openClipboardSelection(text) {
-  if (clipboardOwner && !clipboardOwner.killed) {
-    clipboardOwner.kill("SIGTERM");
+async function waitForClipboardText(expected) {
+  if (!config.verifyClipboard) return;
+  let lastError = null;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    try {
+      const actualSelections = await Promise.all(
+        ["clipboard", "primary"].map(selection => captureInputCommand(
+          config.clipboardCommand,
+          ["-selection", selection, "-out"],
+        )),
+      );
+      if (actualSelections.every(actual => actual === expected)) return;
+      lastError = new Error("X11 selections still contain stale text");
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise(resolveDelay => setTimeout(resolveDelay, 25));
   }
-  const child = spawn(config.clipboardCommand, ["-selection", "clipboard", "-in"], {
+  throw lastError || new Error("Clipboard verification failed");
+}
+
+const selectionOwners = new Set();
+
+function openXSelection(selection, text) {
+  const child = spawn(config.clipboardCommand, ["-selection", selection, "-in"], {
     env: {
       ...process.env,
       DISPLAY: config.display,
@@ -215,7 +284,7 @@ function openClipboardSelection(text) {
     },
     stdio: ["pipe", "ignore", "pipe"],
   });
-  clipboardOwner = child;
+  selectionOwners.add(child);
   return new Promise((resolveClipboard, rejectClipboard) => {
     let settled = false;
     const finish = error => {
@@ -231,7 +300,7 @@ function openClipboardSelection(text) {
       if (error.code !== "EPIPE") finish(error);
     });
     child.once("close", code => {
-      if (clipboardOwner === child) clipboardOwner = null;
+      selectionOwners.delete(child);
       if (code !== 0) {
         finish(new Error(`${config.clipboardCommand} exited with code ${code}`));
       }
@@ -245,19 +314,30 @@ function openClipboardSelection(text) {
   });
 }
 
+function openClipboardSelections(text) {
+  for (const owner of selectionOwners) {
+    if (!owner.killed) owner.kill("SIGTERM");
+  }
+  selectionOwners.clear();
+  return Promise.all(
+    ["clipboard", "primary"].map(selection => openXSelection(selection, text)),
+  );
+}
+
 let textInjectionQueue = Promise.resolve();
 
 function injectCommittedText(text) {
   const operation = textInjectionQueue
     .catch(() => {})
     .then(async () => {
-      // Keep xclip alive after the paste. Terminal clients may make multiple
-      // requests (TARGETS followed by UTF8_STRING) for one paste operation.
-      await openClipboardSelection(text);
-      // Ctrl+Shift+V is GNOME Terminal's explicit paste shortcut and also
-      // works as plain-text paste in the managed Linux desktop applications.
-      // It bypasses the host IME and Sunshine's Ctrl+Shift+U emulation.
-      await runInputCommand(config.pasteCommand, ["key", "--clearmodifiers", "ctrl+shift+v"]);
+      // Own both X11 selections: GTK editors usually paste CLIPBOARD, while
+      // Shift+Insert in terminals commonly pastes PRIMARY.
+      await openClipboardSelections(text);
+      await waitForClipboardText(text);
+      // Shift+Insert is supported by both GNOME Terminal and regular GTK text
+      // editors such as gedit. It bypasses the host IME and Sunshine's
+      // Ctrl+Shift+U emulation without relying on an app-specific shortcut.
+      await runInputCommand(config.pasteCommand, ["key", "--clearmodifiers", "shift+Insert"]);
       // Keep the selection owner alive while the terminal processes the X11
       // key event. This prevents the next fast IME commit from replacing the
       // clipboard between the terminal's TARGETS and UTF8_STRING requests.
