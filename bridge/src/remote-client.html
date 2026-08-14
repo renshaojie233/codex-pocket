@@ -50,6 +50,9 @@
       border-radius: 12px; padding: 12px 14px; background: #30313b; color: white; outline: none;
     }
     #keyboardInput::placeholder { color: #9c9daa; }
+    html.native-host #status,
+    html.native-host #toolbar,
+    html.native-host #keyboardPanel { display: none !important; }
   </style>
 </head>
 <body>
@@ -87,6 +90,10 @@
     function nativeFrameBridge() {
       const bridge = window.CodexPocketNativeFrame;
       return bridge && typeof bridge.onFrame === "function" ? bridge : null;
+    }
+
+    if (nativeFrameBridge()) {
+      document.documentElement.classList.add("native-host");
     }
 
     function report(event, details = {}) {
@@ -212,7 +219,10 @@
       if (!canvas || canvas.width <= 0 || canvas.height <= 0) return;
       applyScale();
       const bounds = canvas.getBoundingClientRect();
-      const targetWidth = Math.max(1, Math.min(1280, Math.round(bounds.width || innerWidth)));
+      const cssWidth = Math.max(1, Math.round(bounds.width || innerWidth));
+      const targetWidth = nativeBridge
+        ? Math.max(1, Math.min(canvas.width, 1920, Math.round(cssWidth * devicePixelRatio)))
+        : Math.max(1, Math.min(1280, cssWidth));
       const targetHeight = Math.max(1, Math.round(targetWidth * canvas.height / canvas.width));
       if (mirrorBuffer.width !== targetWidth) mirrorBuffer.width = targetWidth;
       if (mirrorBuffer.height !== targetHeight) mirrorBuffer.height = targetHeight;
@@ -220,7 +230,7 @@
       context.drawImage(canvas, 0, 0, targetWidth, targetHeight);
       if (nativeBridge) {
         try {
-          const encoded = mirrorBuffer.toDataURL("image/jpeg", 0.8);
+          const encoded = mirrorBuffer.toDataURL("image/jpeg", 0.9);
           nativeBridge.onFrame(encoded, targetWidth, targetHeight, canvas.width, canvas.height);
           if (!nativeFrameReported) {
             nativeFrameReported = true;
