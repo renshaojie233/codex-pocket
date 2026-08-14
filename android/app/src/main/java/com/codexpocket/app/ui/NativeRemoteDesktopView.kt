@@ -8,7 +8,9 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.util.Base64
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.webkit.JavascriptInterface
@@ -43,12 +45,16 @@ internal class NativeRemoteDesktopView(
     private val input = EditText(context)
     private val preferences = context.getSharedPreferences(QUALITY_PREFERENCES, Context.MODE_PRIVATE)
     private lateinit var qualityButton: TextView
+    private lateinit var floatingControls: LinearLayout
+    private lateinit var floatingToggle: TextView
+    private val floatingActionButtons = mutableListOf<View>()
     private val nativeBridge = NativeFrameBridge()
     private var currentUrl = ""
     private var currentBitmap: Bitmap? = null
     private var decodedFrameReported = false
     private var qualityMode = preferences.getString(QUALITY_MODE_KEY, QUALITY_AUTO)
         ?.takeIf(QUALITY_MODES::contains) ?: QUALITY_AUTO
+    private var floatingControlsExpanded = false
     private var active = true
 
     init {
@@ -74,7 +80,7 @@ internal class NativeRemoteDesktopView(
 
         configureStatus()
         configureInputPanel()
-        configureToolbar()
+        configureFloatingControls()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -167,27 +173,112 @@ internal class NativeRemoteDesktopView(
         )
     }
 
-    private fun configureToolbar() {
-        val toolbar = LinearLayout(context).apply {
+    private fun configureFloatingControls() {
+        floatingControls = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             setPadding(dp(7), dp(7), dp(7), dp(7))
             background = roundedBackground(Color.argb(238, 24, 25, 32), dp(18).toFloat())
-            addView(nativeButton("键盘", dp(64)) { toggleKeyboard() })
-            addView(nativeButton("CAD", dp(57)) {
-                evaluate("window.codexPocketNativeCtrlAltDelete?.()")
-            })
-            qualityButton = nativeButton(qualityButtonLabel(), dp(64)) {
-                showQualityMenu(qualityButton)
-            }
-            addView(qualityButton)
-            addView(nativeButton("重连", dp(64)) { reconnect() })
+            elevation = dp(12).toFloat()
         }
+        floatingToggle = nativeButton("•••", dp(46)) { toggleFloatingControls() }.apply {
+            contentDescription = "展开远程控制工具"
+        }
+        floatingControls.addView(floatingToggle)
+
+        val keyboardButton = nativeButton("键盘", dp(64)) {
+            toggleKeyboard()
+            setFloatingControlsExpanded(false)
+        }
+        val cadButton = nativeButton("CAD", dp(57)) {
+                evaluate("window.codexPocketNativeCtrlAltDelete?.()")
+                setFloatingControlsExpanded(false)
+            }
+        qualityButton = nativeButton(qualityButtonLabel(), dp(64)) {
+            showQualityMenu(qualityButton)
+        }
+        val reconnectButton = nativeButton("重连", dp(64)) {
+            reconnect()
+            setFloatingControlsExpanded(false)
+        }
+        floatingActionButtons += listOf(keyboardButton, cadButton, qualityButton, reconnectButton)
+        floatingActionButtons.forEach(floatingControls::addView)
+        attachFloatingDragGesture()
+        setFloatingControlsExpanded(false)
         addView(
-            toolbar,
-            LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
-                .apply { bottomMargin = dp(10) },
+            floatingControls,
+            LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT, Gravity.BOTTOM or Gravity.END)
+                .apply {
+                    marginEnd = dp(14)
+                    bottomMargin = dp(14)
+                },
         )
+    }
+
+    private fun toggleFloatingControls() {
+        setFloatingControlsExpanded(!floatingControlsExpanded)
+    }
+
+    private fun setFloatingControlsExpanded(expanded: Boolean) {
+        floatingControlsExpanded = expanded
+        floatingActionButtons.forEach { it.visibility = if (expanded) View.VISIBLE else View.GONE }
+        if (::floatingToggle.isInitialized) {
+            floatingToggle.text = if (expanded) "收起" else "•••"
+            floatingToggle.contentDescription = if (expanded) "收起远程控制工具" else "展开远程控制工具"
+        }
+        if (::floatingControls.isInitialized) floatingControls.post(::clampFloatingControls)
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun attachFloatingDragGesture() {
+        val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+        var downRawX = 0f
+        var downRawY = 0f
+        var startX = 0f
+        var startY = 0f
+        var dragging = false
+        floatingToggle.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    startX = floatingControls.x
+                    startY = floatingControls.y
+                    dragging = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val deltaX = event.rawX - downRawX
+                    val deltaY = event.rawY - downRawY
+                    if (!dragging && (kotlin.math.abs(deltaX) > touchSlop || kotlin.math.abs(deltaY) > touchSlop)) {
+                        dragging = true
+                    }
+                    if (dragging) {
+                        floatingControls.x = startX + deltaX
+                        floatingControls.y = startY + deltaY
+                        clampFloatingControls()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!dragging) view.performClick()
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> true
+                else -> false
+            }
+        }
+    }
+
+    private fun clampFloatingControls() {
+        if (width <= 0 || height <= 0 || floatingControls.width <= 0 || floatingControls.height <= 0) return
+        floatingControls.x = floatingControls.x.coerceIn(0f, (width - floatingControls.width).coerceAtLeast(0).toFloat())
+        floatingControls.y = floatingControls.y.coerceIn(0f, (height - floatingControls.height).coerceAtLeast(0).toFloat())
+    }
+
+    override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight)
+        if (::floatingControls.isInitialized) floatingControls.post(::clampFloatingControls)
     }
 
     private fun nativeButton(label: String, width: Int, action: () -> Unit): TextView =
@@ -238,6 +329,7 @@ internal class NativeRemoteDesktopView(
                 val selected = QUALITY_OPTIONS.firstOrNull { it.second == item.title.toString() }
                     ?: return@setOnMenuItemClickListener false
                 setQualityMode(selected.first)
+                setFloatingControlsExpanded(false)
                 true
             }
             show()
@@ -297,7 +389,7 @@ internal class NativeRemoteDesktopView(
         webView.stopLoading()
         webView.loadUrl("about:blank")
         webView.destroy()
-        currentBitmap?.recycle()
+        frameView.setImageDrawable(null)
         currentBitmap = null
     }
 
