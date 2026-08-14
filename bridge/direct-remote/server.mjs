@@ -184,6 +184,11 @@ function runInputCommand(command, args, input = null) {
       }
     });
     child.once("error", finish);
+    child.stdin.once("error", error => {
+      // Very short-lived test helpers can close stdin before end() completes.
+      // The process exit status remains the authoritative command result.
+      if (error.code !== "EPIPE") finish(error);
+    });
     child.once("close", code => {
       if (code === 0) {
         finish();
@@ -211,10 +216,6 @@ function openClipboardSelection(text) {
     stdio: ["pipe", "ignore", "pipe"],
   });
   clipboardOwner = child;
-  child.stdin.end(Buffer.from(text, "utf8"));
-  child.once("close", () => {
-    if (clipboardOwner === child) clipboardOwner = null;
-  });
   return new Promise((resolveClipboard, rejectClipboard) => {
     let settled = false;
     const finish = error => {
@@ -224,11 +225,23 @@ function openClipboardSelection(text) {
       else resolveClipboard();
     };
     child.once("error", finish);
+    child.stdin.once("error", error => {
+      // A command that exits before reading stdin must not crash the gateway.
+      // A real xclip failure is also reported by its non-zero process exit.
+      if (error.code !== "EPIPE") finish(error);
+    });
+    child.once("close", code => {
+      if (clipboardOwner === child) clipboardOwner = null;
+      if (code !== 0) {
+        finish(new Error(`${config.clipboardCommand} exited with code ${code}`));
+      }
+    });
     child.once("spawn", () => {
       // Give xclip enough time to claim the X11 selection before the terminal
       // asks first for TARGETS and then for the UTF-8 payload.
       setTimeout(() => finish(), 75);
     });
+    child.stdin.end(Buffer.from(text, "utf8"));
   });
 }
 
