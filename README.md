@@ -38,6 +38,8 @@ flowchart LR
 - 选择模型、思考强度、Default / Plan、Goal 与 Fast 模式。
 - 设置只读、工作区或完全访问权限；初始默认是完全访问。
 - 管理自动化任务、查看账户用量，并接收完成通知与震动。
+- 在同一个 APK 中选择并远程控制 Workstation 或 Agilex，支持触控、软键盘、缩放和自动重连。
+- 支持 Android 全面屏侧滑返回：聊天返回任务列表，远程桌面返回设备列表；根页面需连续返回两次才退到后台。
 
 ## 快速开始
 
@@ -76,7 +78,7 @@ bridge/data/config.json
 APK 会生成到：
 
 ```text
-outputs/codex-pocket-0.15.17.apk
+outputs/codex-pocket-0.16.0.apk
 ```
 
 也可以在手机浏览器打开下面的私有下载页：
@@ -95,6 +97,18 @@ APK 接口支持 HTTP Range 与断点续传；移动网络中断后可直接在�
 ```
 
 以后只要 Mac 已登录系统、Tailscale 在线，就可以直接从手机连接。
+
+### 4. 远程桌面（可选）
+
+首页的“远程桌面”入口默认列出 `workstation` 和 `agilex`。Bridge 只允许
+`bridge/src/remote-desktop.mjs` 中明确列出的 SSH 主机，并通过 SSH 标准输入输出
+连接远端的 `127.0.0.1:5900`；VNC 端口无需对局域网或公网开放。
+
+远端需要运行仅监听 localhost 的 VNC 服务，Mac 的 `~/.ssh/config` 需要具有对应
+别名和免交互密钥。手机只保存原有 Bridge 配对令牌，不保存远端 SSH 私钥。
+
+浏览器 VNC 功能使用 [noVNC](https://github.com/novnc/noVNC)，其核心库采用
+MPL-2.0 许可证，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 如果手机网络偶尔从 `direct` 退化到 DERP 中继，可以在安装开机服务时指定手机的
 Tailscale 设备名，启用每两分钟一次的轻量直连检查：

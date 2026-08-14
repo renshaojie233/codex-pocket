@@ -10,6 +10,8 @@ import android.widget.TextView
 import android.widget.Toast
 import android.widget.VideoView
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.RepeatMode
@@ -123,6 +125,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -186,6 +189,8 @@ import kotlinx.coroutines.flow.first
 fun CodexPocketApp(viewModel: MainViewModel) {
     val state by viewModel.state.collectAsState()
     val snackbar = remember { SnackbarHostState() }
+    var remoteRoute by remember { mutableStateOf<String?>(null) }
+    val remoteDevice = remoteDesktopDevices.firstOrNull { it.id == remoteRoute }
 
     LaunchedEffect(state.error) {
         state.error?.let {
@@ -198,6 +203,8 @@ fun CodexPocketApp(viewModel: MainViewModel) {
         AnimatedContent(
             targetState = when {
                 state.connection != ConnectionState.Connected -> "connect"
+                remoteRoute == "list" -> "remote-list"
+                remoteDevice != null -> "remote-${remoteDevice.id}"
                 state.selectedThread != null -> "chat"
                 else -> "threads"
             },
@@ -205,8 +212,27 @@ fun CodexPocketApp(viewModel: MainViewModel) {
         ) { screen ->
             when (screen) {
                 "connect" -> ConnectionScreen(state, viewModel)
-                "chat" -> ChatScreen(state, viewModel, snackbar)
-                else -> ThreadsScreen(state, viewModel, snackbar)
+                "remote-list" -> RemoteDesktopListScreen(
+                    onBack = { remoteRoute = null },
+                    onConnect = { remoteRoute = it.id },
+                )
+                else -> if (screen.startsWith("remote-") && remoteDevice != null) {
+                    RemoteDesktopSessionScreen(
+                        device = remoteDevice,
+                        endpoint = state.endpoint,
+                        token = state.token,
+                        onBack = { remoteRoute = "list" },
+                    )
+                } else if (screen == "chat") {
+                    ChatScreen(state, viewModel, snackbar)
+                } else {
+                    ThreadsScreen(
+                        state,
+                        viewModel,
+                        snackbar,
+                        onOpenRemoteDesktop = { remoteRoute = "list" },
+                    )
+                }
             }
         }
         SnackbarHost(
@@ -290,9 +316,29 @@ private fun ConnectionScreen(state: UiState, viewModel: MainViewModel) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ThreadsScreen(state: UiState, viewModel: MainViewModel, snackbar: SnackbarHostState) {
+private fun ThreadsScreen(
+    state: UiState,
+    viewModel: MainViewModel,
+    snackbar: SnackbarHostState,
+    onOpenRemoteDesktop: () -> Unit,
+) {
     var showNewThread by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var lastBackAt by remember { mutableLongStateOf(0L) }
+    val activity = LocalActivity.current
+    val backScope = rememberCoroutineScope()
+    BackHandler {
+        val now = System.currentTimeMillis()
+        if (now - lastBackAt <= 1_800L) {
+            activity?.moveTaskToBack(true)
+        } else {
+            lastBackAt = now
+            backScope.launch {
+                snackbar.currentSnackbarData?.dismiss()
+                snackbar.showSnackbar("再从侧边返回一次，Codex Pocket 将退到后台")
+            }
+        }
+    }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -369,6 +415,9 @@ private fun ThreadsScreen(state: UiState, viewModel: MainViewModel, snackbar: Sn
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                item {
+                    RemoteDesktopLauncherCard(onClick = onOpenRemoteDesktop)
+                }
                 item {
                     Text(
                         "最近任务",
@@ -1361,6 +1410,7 @@ internal fun buildChatTimeline(messages: List<ChatMessage>): List<ChatTimelineIt
 @Composable
 private fun ChatScreen(state: UiState, viewModel: MainViewModel, snackbar: SnackbarHostState) {
     val thread = state.selectedThread ?: return
+    BackHandler(onBack = viewModel::closeThread)
     val listState = rememberLazyListState()
     val scrollScope = rememberCoroutineScope()
     val showsStatus = state.isSending || state.pendingApproval != null || state.isReconnecting

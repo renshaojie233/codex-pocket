@@ -16,6 +16,12 @@ import { loadConfig } from "./config.mjs";
 import { mapModel, mapNotification, mapThreadDetail, mapThreadSummary } from "./mapper.mjs";
 import { MutationReceipts } from "./mutation-receipts.mjs";
 import {
+  loadRemoteVncPassword,
+  openRemoteVncTunnel,
+  publicRemoteDesktops,
+  remoteDesktopById,
+} from "./remote-desktop.mjs";
+import {
   filterReplayForClient,
   shouldDeliverSocketPayload,
   socketClientMode,
@@ -23,12 +29,16 @@ import {
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.15.17";
+const VERSION = "0.16.0";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
+const remoteClientTemplate = readFileSync(resolve(moduleDir, "remote-client.html"), "utf8");
+const remoteAssetsRoot = realpathSync(resolve(moduleDir, "..", "node_modules", "@novnc", "novnc"));
 const codex = new CodexClient({ codexBin: config.codexBin });
 const loadedThreads = new Map();
 const pendingServerRequests = new Map();
 const sockets = new Set();
+const remoteSockets = new Set();
+const remoteTunnels = new Map();
 const eventJournal = new EventJournal();
 const mutationReceipts = new MutationReceipts();
 const automationsRoot = resolve(homedir(), ".codex", "automations");
@@ -84,6 +94,94 @@ function candidateTokenMatches(candidate) {
 function tokenMatches(request) {
   const header = request.headers.authorization || "";
   return candidateTokenMatches(header.startsWith("Bearer ") ? header.slice(7) : "");
+}
+
+function requestTokenMatches(request, url) {
+  return tokenMatches(request) || candidateTokenMatches(url.searchParams.get("token") || "");
+}
+
+function htmlJson(value) {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+function serveRemoteClient(req, res, url) {
+  if (!requestTokenMatches(req, url)) {
+    json(res, 401, { ok: false, error: "Unauthorized" });
+    return;
+  }
+  const device = remoteDesktopById(url.searchParams.get("device"));
+  if (!device) {
+    json(res, 404, { ok: false, error: "找不到这台远程电脑" });
+    return;
+  }
+  try {
+    const password = loadRemoteVncPassword(device);
+    const html = remoteClientTemplate
+      .replace("__DEVICE_JSON__", htmlJson({
+        id: device.id,
+        name: device.name,
+        description: device.description,
+      }))
+      .replace("__TOKEN_JSON__", htmlJson(config.token))
+      .replace("__PASSWORD_JSON__", htmlJson(password));
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-length": Buffer.byteLength(html),
+      "cache-control": "no-store",
+      "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src ws: wss:; img-src 'self' data: blob:; font-src 'self' data:",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+    });
+    res.end(html);
+  } catch (error) {
+    json(res, 503, {
+      ok: false,
+      error: `无法读取 ${device.name} 的远程桌面配置：${error.message}`,
+    });
+  }
+}
+
+function serveRemoteAsset(req, res, url) {
+  let relative;
+  try {
+    relative = decodeURIComponent(url.pathname.slice("/remote-assets/".length));
+  } catch {
+    json(res, 400, { ok: false, error: "Invalid asset path" });
+    return;
+  }
+  if (!relative || relative.includes("..") || !/^[A-Za-z0-9_./-]+$/.test(relative)) {
+    json(res, 404, { ok: false, error: "Asset not found" });
+    return;
+  }
+  let path;
+  let stats;
+  try {
+    path = realpathSync(resolve(remoteAssetsRoot, relative));
+    stats = statSync(path);
+  } catch {
+    json(res, 404, { ok: false, error: "Asset not found" });
+    return;
+  }
+  if (!path.startsWith(`${remoteAssetsRoot}${sep}`) || !stats.isFile()) {
+    json(res, 404, { ok: false, error: "Asset not found" });
+    return;
+  }
+  const contentType = new Map([
+    [".js", "text/javascript; charset=utf-8"],
+    [".json", "application/json; charset=utf-8"],
+    [".wasm", "application/wasm"],
+  ]).get(extname(path).toLowerCase()) || "application/octet-stream";
+  res.writeHead(200, {
+    "content-type": contentType,
+    "content-length": stats.size,
+    "cache-control": "public, max-age=86400, immutable",
+    "x-content-type-options": "nosniff",
+  });
+  if (req.method === "HEAD") {
+    res.end();
+    return;
+  }
+  createReadStream(path).pipe(res);
 }
 
 const mediaContentTypes = new Map([
@@ -292,9 +390,26 @@ const server = http.createServer((req, res) => {
       version: VERSION,
       codexReady: codex.started,
       clients: sockets.size,
+      remoteClients: remoteSockets.size,
       foregroundClients: [...sockets].filter((ws) => ws.clientMode !== "background").length,
       backgroundClients: [...sockets].filter((ws) => ws.clientMode === "background").length,
     });
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/remote/devices") {
+    if (!requestTokenMatches(req, url)) {
+      json(res, 401, { ok: false, error: "Unauthorized" });
+    } else {
+      json(res, 200, { devices: publicRemoteDesktops() });
+    }
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/remote/client") {
+    serveRemoteClient(req, res, url);
+    return;
+  }
+  if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/remote-assets/")) {
+    serveRemoteAsset(req, res, url);
     return;
   }
   if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/media") {
@@ -372,15 +487,67 @@ const server = http.createServer((req, res) => {
 });
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
+const remoteWss = new WebSocketServer({ noServer: true, maxPayload: 2 * 1024 * 1024 });
 
 server.on("upgrade", (request, socket, head) => {
-  const path = new URL(request.url, "http://bridge.local").pathname;
-  if (path !== "/ws" || !tokenMatches(request)) {
-    socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
-    socket.destroy();
+  const url = new URL(request.url, "http://bridge.local");
+  if (url.pathname === "/ws" && tokenMatches(request)) {
+    wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws, request));
     return;
   }
-  wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws, request));
+  if (url.pathname === "/remote/ws" && requestTokenMatches(request, url)) {
+    const device = remoteDesktopById(url.searchParams.get("device"));
+    if (device) {
+      request.remoteDesktop = device;
+      remoteWss.handleUpgrade(request, socket, head, (ws) => remoteWss.emit("connection", ws, request));
+      return;
+    }
+  }
+  {
+    socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+  }
+});
+
+remoteWss.on("connection", (ws, request) => {
+  const device = request.remoteDesktop;
+  const tunnel = openRemoteVncTunnel(device);
+  let stderr = "";
+  let closed = false;
+  ws.isAlive = true;
+  remoteSockets.add(ws);
+  remoteTunnels.set(ws, tunnel);
+
+  const close = (code, reason) => {
+    if (closed) return;
+    closed = true;
+    remoteSockets.delete(ws);
+    remoteTunnels.delete(ws);
+    if (!tunnel.killed) tunnel.kill("SIGTERM");
+    if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
+      ws.close(code, reason.slice(0, 120));
+    }
+  };
+
+  ws.on("message", (data) => {
+    if (!tunnel.stdin.destroyed) tunnel.stdin.write(data);
+  });
+  ws.on("pong", () => { ws.isAlive = true; });
+  ws.on("close", () => close(1000, "Remote desktop closed"));
+  ws.on("error", () => close(1011, "Remote desktop socket failed"));
+  tunnel.stdout.on("data", (data) => {
+    if (ws.readyState === ws.OPEN) ws.send(data, { binary: true });
+  });
+  tunnel.stderr.on("data", (data) => {
+    stderr = `${stderr}${data.toString("utf8")}`.slice(-600);
+  });
+  tunnel.on("error", (error) => close(1011, error.message || "SSH tunnel failed"));
+  tunnel.on("exit", (code, signal) => {
+    if (!closed && code !== 0) {
+      console.error(`Remote desktop ${device.id} tunnel exited (${code ?? signal}): ${stderr.trim()}`);
+    }
+    close(code === 0 ? 1000 : 1011, code === 0 ? "Remote desktop closed" : "SSH tunnel ended");
+  });
 });
 
 function send(ws, payload) {
@@ -912,7 +1079,7 @@ wss.on("connection", (ws, request) => {
     capabilities: [
       "threads", "create", "archive", "directories", "history", "streaming",
       "interrupt", "steer", "models", "reasoning", "approvals", "media", "usage",
-      "modes", "goal", "fast", "automations", "permissions",
+      "modes", "goal", "fast", "automations", "permissions", "remote-desktop",
     ],
   });
 
@@ -946,9 +1113,13 @@ wss.on("connection", (ws, request) => {
 });
 
 const socketHeartbeat = setInterval(() => {
-  for (const ws of sockets) {
+  for (const ws of [...sockets, ...remoteSockets]) {
     if (!ws.isAlive) {
       sockets.delete(ws);
+      remoteSockets.delete(ws);
+      const tunnel = remoteTunnels.get(ws);
+      if (tunnel && !tunnel.killed) tunnel.kill("SIGTERM");
+      remoteTunnels.delete(ws);
       ws.terminate();
       continue;
     }
@@ -1008,6 +1179,10 @@ server.listen(config.port, config.host, () => {
 function shutdown() {
   clearInterval(socketHeartbeat);
   for (const ws of sockets) ws.close(1001, "Bridge shutting down");
+  for (const ws of remoteSockets) ws.close(1001, "Bridge shutting down");
+  for (const tunnel of remoteTunnels.values()) {
+    if (!tunnel.killed) tunnel.kill("SIGTERM");
+  }
   server.close();
   codex.stop();
 }

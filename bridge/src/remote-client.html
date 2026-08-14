@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="theme-color" content="#111217">
+  <title>Codex Pocket Remote Desktop</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, -apple-system, sans-serif; }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #111217; }
+    button, textarea { font: inherit; }
+    #screen { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #111217; }
+    #screen canvas { image-rendering: auto; }
+    #status {
+      position: fixed; left: 50%; top: max(10px, env(safe-area-inset-top)); z-index: 5;
+      transform: translateX(-50%); max-width: calc(100% - 28px); padding: 8px 13px;
+      border-radius: 999px; background: rgba(25, 26, 34, .86); color: #d8d8e5;
+      box-shadow: 0 6px 28px rgba(0,0,0,.32); backdrop-filter: blur(14px);
+      font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      transition: opacity .25s ease;
+    }
+    #status.connected { color: #a9f2cc; opacity: .78; }
+    #toolbar {
+      position: fixed; z-index: 6; left: 50%; bottom: max(10px, env(safe-area-inset-bottom));
+      transform: translateX(-50%); display: flex; gap: 7px; padding: 7px;
+      border: 1px solid rgba(255,255,255,.10); border-radius: 18px;
+      background: rgba(24,25,32,.88); box-shadow: 0 8px 28px rgba(0,0,0,.38); backdrop-filter: blur(16px);
+    }
+    #toolbar button {
+      min-width: 43px; height: 41px; padding: 0 11px; border: 0; border-radius: 12px;
+      background: rgba(255,255,255,.08); color: #f2f2f7; font-weight: 650;
+    }
+    #toolbar button:active { background: #625bff; transform: scale(.96); }
+    #keyboardPanel {
+      position: fixed; z-index: 7; left: 10px; right: 10px;
+      bottom: max(68px, calc(env(safe-area-inset-bottom) + 68px)); display: none;
+      padding: 9px; border-radius: 17px; background: rgba(24,25,32,.94);
+      border: 1px solid rgba(255,255,255,.12); box-shadow: 0 10px 36px rgba(0,0,0,.45);
+    }
+    #keyboardPanel.open { display: block; }
+    #keyboardInput {
+      width: 100%; height: 46px; resize: none; border: 1px solid rgba(255,255,255,.15);
+      border-radius: 12px; padding: 12px 14px; background: #30313b; color: white; outline: none;
+    }
+    #keyboardInput::placeholder { color: #9c9daa; }
+  </style>
+</head>
+<body>
+  <div id="screen"></div>
+  <div id="status">正在建立安全通道…</div>
+  <div id="keyboardPanel"><textarea id="keyboardInput" rows="1" placeholder="输入内容并发送到远程电脑…" autocomplete="off" autocapitalize="off"></textarea></div>
+  <div id="toolbar">
+    <button id="keyboardButton" aria-label="键盘">键盘</button>
+    <button id="ctrlAltDelButton" aria-label="Ctrl Alt Delete">CAD</button>
+    <button id="fitButton" aria-label="适应屏幕">适应</button>
+    <button id="reconnectButton" aria-label="重新连接">重连</button>
+  </div>
+  <script type="module">
+    import RFB from "/remote-assets/core/rfb.js";
+
+    const device = __DEVICE_JSON__;
+    const token = __TOKEN_JSON__;
+    const credentials = { password: __PASSWORD_JSON__ };
+    const screen = document.getElementById("screen");
+    const status = document.getElementById("status");
+    const keyboardPanel = document.getElementById("keyboardPanel");
+    const keyboardInput = document.getElementById("keyboardInput");
+    let rfb = null;
+    let scaleToFit = true;
+
+    history.replaceState(null, "", `/remote/client?device=${encodeURIComponent(device.id)}`);
+
+    function setStatus(message, connected = false) {
+      status.textContent = message;
+      status.classList.toggle("connected", connected);
+    }
+
+    function websocketUrl() {
+      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+      const params = new URLSearchParams({ device: device.id, token });
+      return `${scheme}//${location.host}/remote/ws?${params}`;
+    }
+
+    function connect() {
+      if (rfb) {
+        try { rfb.disconnect(); } catch (_) { /* already closed */ }
+      }
+      setStatus(`正在连接 ${device.name}…`);
+      rfb = new RFB(screen, websocketUrl(), { credentials, shared: true });
+      rfb.scaleViewport = scaleToFit;
+      rfb.resizeSession = false;
+      rfb.clipViewport = false;
+      rfb.dragViewport = false;
+      rfb.focusOnClick = true;
+      rfb.viewOnly = false;
+      rfb.showDotCursor = true;
+      rfb.qualityLevel = 6;
+      rfb.compressionLevel = 2;
+      rfb.addEventListener("connect", () => {
+        setStatus(`${device.name} 已连接`, true);
+        rfb.focus();
+      });
+      rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials(credentials));
+      rfb.addEventListener("disconnect", event => {
+        setStatus(event.detail.clean ? `${device.name} 已断开` : "连接中断，可以点击重连");
+      });
+      rfb.addEventListener("securityfailure", event => {
+        setStatus(event.detail.reason || "远程桌面认证失败");
+      });
+      rfb.addEventListener("desktopname", event => {
+        document.title = `${event.detail.name || device.name} · Codex Pocket`;
+      });
+    }
+
+    function sendKeysym(keysym, code = null) {
+      if (rfb) rfb.sendKey(keysym, code);
+    }
+
+    function sendText(text) {
+      if (!rfb || !text) return;
+      for (const character of text) {
+        const point = character.codePointAt(0);
+        if (point > 0xff) {
+          rfb.clipboardPasteFrom(character);
+          rfb.sendKey(0xffe3, "ControlLeft", true);
+          rfb.sendKey(0x76, "KeyV", true);
+          rfb.sendKey(0x76, "KeyV", false);
+          rfb.sendKey(0xffe3, "ControlLeft", false);
+        } else {
+          sendKeysym(point);
+        }
+      }
+    }
+
+    document.getElementById("keyboardButton").addEventListener("click", () => {
+      keyboardPanel.classList.toggle("open");
+      if (keyboardPanel.classList.contains("open")) {
+        keyboardInput.focus();
+      } else {
+        keyboardInput.blur();
+        rfb?.focus();
+      }
+    });
+    keyboardInput.addEventListener("input", event => {
+      const text = event.data || keyboardInput.value;
+      sendText(text);
+      keyboardInput.value = "";
+    });
+    keyboardInput.addEventListener("keydown", event => {
+      const special = {
+        Enter: 0xff0d, Backspace: 0xff08, Tab: 0xff09, Escape: 0xff1b,
+        ArrowLeft: 0xff51, ArrowUp: 0xff52, ArrowRight: 0xff53, ArrowDown: 0xff54,
+        Delete: 0xffff,
+      }[event.key];
+      if (special) {
+        event.preventDefault();
+        event.stopPropagation();
+        sendKeysym(special, event.code || null);
+      }
+    });
+    document.getElementById("ctrlAltDelButton").addEventListener("click", () => rfb?.sendCtrlAltDel());
+    document.getElementById("fitButton").addEventListener("click", event => {
+      scaleToFit = !scaleToFit;
+      if (rfb) rfb.scaleViewport = scaleToFit;
+      event.currentTarget.textContent = scaleToFit ? "适应" : "原始";
+    });
+    document.getElementById("reconnectButton").addEventListener("click", connect);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) keyboardInput.blur();
+    });
+    window.codexPocketRemoteDisconnect = () => {
+      try { rfb?.disconnect(); } catch (_) { /* already disconnected */ }
+    };
+    window.codexPocketRemoteReconnect = connect;
+    connect();
+  </script>
+</body>
+</html>
