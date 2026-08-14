@@ -11,7 +11,13 @@
     html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #111217; }
     button, textarea { font: inherit; }
     #screen { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; background: #111217; }
-    #screen canvas { image-rendering: auto; }
+    #screen canvas { position: relative; z-index: 1; image-rendering: auto; }
+    #frameMirror {
+      position: absolute; z-index: 2; inset: 0; display: none; margin: auto;
+      pointer-events: none; object-fit: contain; image-rendering: auto;
+    }
+    #screen.mirror-active #frameMirror { display: block; }
+    #screen.mirror-active canvas { opacity: 0; }
     #status {
       position: fixed; left: 50%; top: max(10px, env(safe-area-inset-top)); z-index: 5;
       transform: translateX(-50%); max-width: calc(100% - 28px); padding: 8px 13px;
@@ -47,7 +53,7 @@
   </style>
 </head>
 <body>
-  <div id="screen"></div>
+  <div id="screen"><img id="frameMirror" alt="远程桌面画面"></div>
   <div id="status">正在建立安全通道…</div>
   <div id="keyboardPanel"><textarea id="keyboardInput" rows="1" placeholder="输入内容并发送到远程电脑…" autocomplete="off" autocapitalize="off"></textarea></div>
   <div id="toolbar">
@@ -64,11 +70,17 @@
     const credentials = { password: __PASSWORD_JSON__ };
     const screen = document.getElementById("screen");
     const status = document.getElementById("status");
+    const frameMirror = document.getElementById("frameMirror");
     const keyboardPanel = document.getElementById("keyboardPanel");
     const keyboardInput = document.getElementById("keyboardInput");
+    const useFrameMirror = /\bwv\)/i.test(navigator.userAgent);
+    const mirrorBuffer = document.createElement("canvas");
     let rfb = null;
     let scaleToFit = true;
     let scaleRefreshTimer = 0;
+    let mirrorTimer = 0;
+    let mirrorBusy = false;
+    let mirrorUrl = "";
 
     function report(event, details = {}) {
       const payload = {
@@ -124,6 +136,13 @@
           top: Math.round(bounds.top),
           left: Math.round(bounds.left),
         },
+        mirror: {
+          active: screen.classList.contains("mirror-active"),
+          width: Math.round(frameMirror.getBoundingClientRect().width),
+          height: Math.round(frameMirror.getBoundingClientRect().height),
+          naturalWidth: frameMirror.naturalWidth,
+          naturalHeight: frameMirror.naturalHeight,
+        },
         pixels,
       });
     }
@@ -147,19 +166,74 @@
       return `${scheme}//${location.host}/remote/ws?${params}`;
     }
 
+    function applyScale() {
+      if (!rfb) return;
+      const canvas = screen.querySelector("canvas");
+      if (!canvas || canvas.width <= 0 || canvas.height <= 0) return;
+      const availableWidth = Math.max(1, innerWidth || document.documentElement.clientWidth);
+      const availableHeight = Math.max(1, innerHeight || document.documentElement.clientHeight);
+      const factor = scaleToFit
+        ? Math.min(availableWidth / canvas.width, availableHeight / canvas.height)
+        : 1;
+
+      // noVNC's public scaleViewport path reads a zero-sized Compose host on
+      // HyperOS. Set the Display scale from the real WebView viewport so both
+      // visual size and pointer-coordinate conversion use the same factor.
+      rfb.scaleViewport = false;
+      if (rfb._display) {
+        rfb._display.scale = factor;
+      } else {
+        canvas.style.width = `${canvas.width * factor}px`;
+        canvas.style.height = `${canvas.height * factor}px`;
+      }
+      frameMirror.style.width = `${canvas.width * factor}px`;
+      frameMirror.style.height = `${canvas.height * factor}px`;
+    }
+
     function refreshScale(delay = 0) {
       clearTimeout(scaleRefreshTimer);
       scaleRefreshTimer = setTimeout(() => {
-        if (!rfb) return;
-        // Android WebView can report a zero-sized Compose host during the
-        // first noVNC layout pass. Toggle scaling after the host has its real
-        // size so the canvas does not remain at CSS 0 × 0.
-        rfb.scaleViewport = false;
-        // Do this synchronously. HyperOS WebView may throttle or skip the
-        // requestAnimationFrame callback while a software-layer WebView is
-        // settling, which leaves the canvas at its 1920 × 1080 native size.
-        rfb.scaleViewport = scaleToFit;
+        applyScale();
       }, delay);
+    }
+
+    function updateMirror() {
+      if (!useFrameMirror || mirrorBusy || document.hidden) return;
+      const canvas = screen.querySelector("canvas");
+      if (!canvas || canvas.width <= 0 || canvas.height <= 0) return;
+      applyScale();
+      const bounds = canvas.getBoundingClientRect();
+      const targetWidth = Math.max(1, Math.min(1280, Math.round(bounds.width || innerWidth)));
+      const targetHeight = Math.max(1, Math.round(targetWidth * canvas.height / canvas.width));
+      if (mirrorBuffer.width !== targetWidth) mirrorBuffer.width = targetWidth;
+      if (mirrorBuffer.height !== targetHeight) mirrorBuffer.height = targetHeight;
+      const context = mirrorBuffer.getContext("2d", { alpha: false });
+      context.drawImage(canvas, 0, 0, targetWidth, targetHeight);
+      mirrorBusy = true;
+      mirrorBuffer.toBlob(blob => {
+        mirrorBusy = false;
+        if (!blob) return;
+        const nextUrl = URL.createObjectURL(blob);
+        frameMirror.onload = () => {
+          if (mirrorUrl) URL.revokeObjectURL(mirrorUrl);
+          mirrorUrl = nextUrl;
+          screen.classList.add("mirror-active");
+        };
+        frameMirror.src = nextUrl;
+      }, "image/jpeg", 0.78);
+    }
+
+    function startMirror() {
+      clearInterval(mirrorTimer);
+      if (!useFrameMirror) return;
+      updateMirror();
+      mirrorTimer = setInterval(updateMirror, 250);
+    }
+
+    function stopMirror() {
+      clearInterval(mirrorTimer);
+      mirrorTimer = 0;
+      screen.classList.remove("mirror-active");
     }
 
     function connect() {
@@ -168,7 +242,7 @@
       }
       setStatus(`正在连接 ${device.name}…`);
       rfb = new RFB(screen, websocketUrl(), { credentials, shared: true });
-      rfb.scaleViewport = scaleToFit;
+      rfb.scaleViewport = false;
       rfb.resizeSession = false;
       rfb.clipViewport = false;
       rfb.dragViewport = false;
@@ -183,12 +257,14 @@
         refreshScale();
         refreshScale(250);
         setTimeout(() => refreshScale(), 1_000);
+        startMirror();
         report("connected");
         setTimeout(reportCanvas, 1_000);
         setTimeout(reportCanvas, 4_000);
       });
       rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials(credentials));
       rfb.addEventListener("disconnect", event => {
+        stopMirror();
         setStatus(event.detail.clean ? `${device.name} 已断开` : "连接中断，可以点击重连");
         report("disconnected", { message: event.detail.clean ? "clean" : "unclean" });
       });
@@ -258,6 +334,7 @@
       if (document.hidden) keyboardInput.blur();
     });
     window.codexPocketRemoteDisconnect = () => {
+      stopMirror();
       try { rfb?.disconnect(); } catch (_) { /* already disconnected */ }
     };
     window.codexPocketRemoteReconnect = connect;

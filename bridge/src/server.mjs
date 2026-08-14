@@ -205,6 +205,7 @@ function receiveRemoteDiagnostic(req, res, url) {
         secure: Boolean(parsed.secure),
         viewport: parsed.viewport,
         canvas: parsed.canvas,
+        mirror: parsed.mirror,
         pixels: parsed.pixels,
         message: String(parsed.message || "").slice(0, 240),
         userAgent: String(parsed.userAgent || req.headers["user-agent"] || "").slice(0, 240),
