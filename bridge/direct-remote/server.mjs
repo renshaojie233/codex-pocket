@@ -245,6 +245,10 @@ function injectCommittedText(text) {
       // works as plain-text paste in the managed Linux desktop applications.
       // It bypasses the host IME and Sunshine's Ctrl+Shift+U emulation.
       await runInputCommand(config.pasteCommand, ["key", "--clearmodifiers", "ctrl+shift+v"]);
+      // Keep the selection owner alive while the terminal processes the X11
+      // key event. This prevents the next fast IME commit from replacing the
+      // clipboard between the terminal's TARGETS and UTF8_STRING requests.
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 150));
     });
   textInjectionQueue = operation;
   return operation;
