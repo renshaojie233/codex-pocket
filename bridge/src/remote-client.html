@@ -86,6 +86,7 @@
     let mirrorBusy = false;
     let mirrorUrl = "";
     let nativeFrameReported = false;
+    let nativeQualityMode = "auto";
 
     function nativeFrameBridge() {
       const bridge = window.CodexPocketNativeFrame;
@@ -94,6 +95,16 @@
 
     if (nativeFrameBridge()) {
       document.documentElement.classList.add("native-host");
+    }
+
+    function nativeFrameWidth(canvas, cssWidth) {
+      switch (nativeQualityMode) {
+        case "smooth": return Math.min(canvas.width, 960);
+        case "high": return Math.min(canvas.width, 1280);
+        case "original": return canvas.width;
+        default:
+          return Math.min(canvas.width, 1920, Math.round(cssWidth * devicePixelRatio));
+      }
     }
 
     function report(event, details = {}) {
@@ -221,7 +232,7 @@
       const bounds = canvas.getBoundingClientRect();
       const cssWidth = Math.max(1, Math.round(bounds.width || innerWidth));
       const targetWidth = nativeBridge
-        ? Math.max(1, Math.min(canvas.width, 1920, Math.round(cssWidth * devicePixelRatio)))
+        ? Math.max(1, nativeFrameWidth(canvas, cssWidth))
         : Math.max(1, Math.min(1280, cssWidth));
       const targetHeight = Math.max(1, Math.round(targetWidth * canvas.height / canvas.width));
       if (mirrorBuffer.width !== targetWidth) mirrorBuffer.width = targetWidth;
@@ -236,7 +247,12 @@
             nativeFrameReported = true;
             report("native-frame", {
               canvas: { width: canvas.width, height: canvas.height },
-              nativeFrame: { width: targetWidth, height: targetHeight, encodedBytes: encoded.length },
+              nativeFrame: {
+                width: targetWidth,
+                height: targetHeight,
+                encodedBytes: encoded.length,
+                qualityMode: nativeQualityMode,
+              },
             });
           }
         } catch (error) {
@@ -381,9 +397,20 @@
     window.codexPocketNativeReconnect = connect;
     window.codexPocketNativeCtrlAltDelete = () => rfb?.sendCtrlAltDel();
     window.codexPocketNativeSendText = sendText;
+    window.codexPocketNativeSetQuality = mode => {
+      const allowed = new Set(["auto", "smooth", "high", "original"]);
+      if (!allowed.has(mode)) return;
+      nativeQualityMode = mode;
+      nativeFrameReported = false;
+      updateMirror();
+    };
     window.codexPocketNativeFrameDisplayed = (width, height) => {
       report("native-frame-displayed", {
-        nativeFrame: { width: Number(width) || 0, height: Number(height) || 0 },
+        nativeFrame: {
+          width: Number(width) || 0,
+          height: Number(height) || 0,
+          qualityMode: nativeQualityMode,
+        },
       });
     };
     window.addEventListener("resize", () => refreshScale(100));

@@ -19,8 +19,8 @@ android {
         applicationId = "com.codexpocket.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 37
-        versionName = "0.16.3"
+        versionCode = 38
+        versionName = "0.16.4"
 
         buildConfigField(
             "String",

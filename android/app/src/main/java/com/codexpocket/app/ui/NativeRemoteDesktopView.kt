@@ -20,6 +20,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.TextView
 import java.util.concurrent.atomic.AtomicBoolean
 import org.json.JSONObject
@@ -40,10 +41,14 @@ internal class NativeRemoteDesktopView(
     private val statusView = TextView(context)
     private val inputPanel = LinearLayout(context)
     private val input = EditText(context)
+    private val preferences = context.getSharedPreferences(QUALITY_PREFERENCES, Context.MODE_PRIVATE)
+    private lateinit var qualityButton: TextView
     private val nativeBridge = NativeFrameBridge()
     private var currentUrl = ""
     private var currentBitmap: Bitmap? = null
     private var decodedFrameReported = false
+    private var qualityMode = preferences.getString(QUALITY_MODE_KEY, QUALITY_AUTO)
+        ?.takeIf(QUALITY_MODES::contains) ?: QUALITY_AUTO
     private var active = true
 
     init {
@@ -95,6 +100,10 @@ internal class NativeRemoteDesktopView(
                     view: WebView,
                     request: WebResourceRequest,
                 ): Boolean = request.url.host != expectedHost
+
+                override fun onPageFinished(view: WebView, url: String) {
+                    applyQualityMode()
+                }
             }
             addJavascriptInterface(nativeBridge, NATIVE_FRAME_INTERFACE)
         }
@@ -168,6 +177,10 @@ internal class NativeRemoteDesktopView(
             addView(nativeButton("CAD", dp(57)) {
                 evaluate("window.codexPocketNativeCtrlAltDelete?.()")
             })
+            qualityButton = nativeButton(qualityButtonLabel(), dp(64)) {
+                showQualityMenu(qualityButton)
+            }
+            addView(qualityButton)
             addView(nativeButton("重连", dp(64)) { reconnect() })
         }
         addView(
@@ -211,6 +224,43 @@ internal class NativeRemoteDesktopView(
         if (text.isBlank()) return
         evaluate("window.codexPocketNativeSendText?.(${JSONObject.quote(text)})")
         input.text?.clear()
+    }
+
+    private fun showQualityMenu(anchor: View) {
+        PopupMenu(context, anchor).apply {
+            QUALITY_OPTIONS.forEach { (mode, label) ->
+                menu.add(label).apply {
+                    isCheckable = true
+                    isChecked = qualityMode == mode
+                }
+            }
+            setOnMenuItemClickListener { item ->
+                val selected = QUALITY_OPTIONS.firstOrNull { it.second == item.title.toString() }
+                    ?: return@setOnMenuItemClickListener false
+                setQualityMode(selected.first)
+                true
+            }
+            show()
+        }
+    }
+
+    private fun setQualityMode(mode: String) {
+        if (mode !in QUALITY_MODES) return
+        qualityMode = mode
+        preferences.edit().putString(QUALITY_MODE_KEY, mode).apply()
+        if (::qualityButton.isInitialized) qualityButton.text = qualityButtonLabel()
+        applyQualityMode()
+    }
+
+    private fun qualityButtonLabel(): String = when (qualityMode) {
+        QUALITY_SMOOTH -> "流畅"
+        QUALITY_HIGH -> "高清"
+        QUALITY_ORIGINAL -> "原始"
+        else -> "自动"
+    }
+
+    private fun applyQualityMode() {
+        evaluate("window.codexPocketNativeSetQuality?.(${JSONObject.quote(qualityMode)})")
     }
 
     fun load(url: String) {
@@ -321,6 +371,7 @@ internal class NativeRemoteDesktopView(
                     if (connected) Color.rgb(169, 242, 204) else Color.rgb(216, 216, 229),
                 )
                 if (!connected) statusView.visibility = View.VISIBLE
+                if (connected) applyQualityMode()
             }
         }
 
@@ -332,5 +383,18 @@ internal class NativeRemoteDesktopView(
     private companion object {
         const val NATIVE_FRAME_INTERFACE = "CodexPocketNativeFrame"
         const val OLD_FRAME_RECYCLE_DELAY_MILLIS = 750L
+        const val QUALITY_PREFERENCES = "remote-desktop"
+        const val QUALITY_MODE_KEY = "quality-mode"
+        const val QUALITY_AUTO = "auto"
+        const val QUALITY_SMOOTH = "smooth"
+        const val QUALITY_HIGH = "high"
+        const val QUALITY_ORIGINAL = "original"
+        val QUALITY_MODES = setOf(QUALITY_AUTO, QUALITY_SMOOTH, QUALITY_HIGH, QUALITY_ORIGINAL)
+        val QUALITY_OPTIONS = listOf(
+            QUALITY_AUTO to "自动（按屏幕）",
+            QUALITY_SMOOTH to "流畅 960 × 540",
+            QUALITY_HIGH to "高清 1280 × 720",
+            QUALITY_ORIGINAL to "原始 1920 × 1080",
+        )
     }
 }
