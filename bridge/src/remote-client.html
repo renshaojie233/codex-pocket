@@ -68,6 +68,71 @@
     const keyboardInput = document.getElementById("keyboardInput");
     let rfb = null;
     let scaleToFit = true;
+    let scaleRefreshTimer = 0;
+
+    function report(event, details = {}) {
+      const payload = {
+        device: device.id,
+        event,
+        secure: window.isSecureContext,
+        viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
+        userAgent: navigator.userAgent,
+        ...details,
+      };
+      fetch(`/remote/diagnostics?token=${encodeURIComponent(token)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+        keepalive: true,
+      }).catch(() => {});
+    }
+
+    function reportCanvas() {
+      const canvas = screen.querySelector("canvas");
+      if (!canvas) {
+        report("canvas-missing");
+        return;
+      }
+      const bounds = canvas.getBoundingClientRect();
+      let pixels = null;
+      try {
+        const probe = document.createElement("canvas");
+        probe.width = 32;
+        probe.height = 18;
+        const context = probe.getContext("2d", { willReadFrequently: true });
+        context.drawImage(canvas, 0, 0, probe.width, probe.height);
+        const data = context.getImageData(0, 0, probe.width, probe.height).data;
+        let minimum = 255;
+        let maximum = 0;
+        let visible = 0;
+        for (let index = 0; index < data.length; index += 4) {
+          const value = Math.round((data[index] + data[index + 1] + data[index + 2]) / 3);
+          minimum = Math.min(minimum, value);
+          maximum = Math.max(maximum, value);
+          if (value > 8) visible += 1;
+        }
+        pixels = { minimum, maximum, visible, total: data.length / 4 };
+      } catch (error) {
+        pixels = { error: error.message || String(error) };
+      }
+      report("canvas", {
+        canvas: {
+          width: canvas.width,
+          height: canvas.height,
+          clientWidth: Math.round(bounds.width),
+          clientHeight: Math.round(bounds.height),
+          top: Math.round(bounds.top),
+          left: Math.round(bounds.left),
+        },
+        pixels,
+      });
+    }
+
+    window.addEventListener("error", event => report("window-error", { message: event.message }));
+    window.addEventListener("unhandledrejection", event => {
+      report("unhandled-rejection", { message: event.reason?.message || String(event.reason) });
+    });
+    report("page-ready");
 
     history.replaceState(null, "", `/remote/client?device=${encodeURIComponent(device.id)}`);
 
@@ -80,6 +145,20 @@
       const scheme = location.protocol === "https:" ? "wss:" : "ws:";
       const params = new URLSearchParams({ device: device.id, token });
       return `${scheme}//${location.host}/remote/ws?${params}`;
+    }
+
+    function refreshScale(delay = 0) {
+      clearTimeout(scaleRefreshTimer);
+      scaleRefreshTimer = setTimeout(() => {
+        if (!rfb) return;
+        // Android WebView can report a zero-sized Compose host during the
+        // first noVNC layout pass. Toggle scaling after the host has its real
+        // size so the canvas does not remain at CSS 0 × 0.
+        rfb.scaleViewport = false;
+        requestAnimationFrame(() => {
+          if (rfb) rfb.scaleViewport = scaleToFit;
+        });
+      }, delay);
     }
 
     function connect() {
@@ -100,13 +179,21 @@
       rfb.addEventListener("connect", () => {
         setStatus(`${device.name} 已连接`, true);
         rfb.focus();
+        refreshScale();
+        refreshScale(250);
+        setTimeout(() => refreshScale(), 1_000);
+        report("connected");
+        setTimeout(reportCanvas, 1_000);
+        setTimeout(reportCanvas, 4_000);
       });
       rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials(credentials));
       rfb.addEventListener("disconnect", event => {
         setStatus(event.detail.clean ? `${device.name} 已断开` : "连接中断，可以点击重连");
+        report("disconnected", { message: event.detail.clean ? "clean" : "unclean" });
       });
       rfb.addEventListener("securityfailure", event => {
         setStatus(event.detail.reason || "远程桌面认证失败");
+        report("security-failure", { message: event.detail.reason || "authentication failed" });
       });
       rfb.addEventListener("desktopname", event => {
         document.title = `${event.detail.name || device.name} · Codex Pocket`;
@@ -162,7 +249,7 @@
     document.getElementById("ctrlAltDelButton").addEventListener("click", () => rfb?.sendCtrlAltDel());
     document.getElementById("fitButton").addEventListener("click", event => {
       scaleToFit = !scaleToFit;
-      if (rfb) rfb.scaleViewport = scaleToFit;
+      refreshScale();
       event.currentTarget.textContent = scaleToFit ? "适应" : "原始";
     });
     document.getElementById("reconnectButton").addEventListener("click", connect);
@@ -173,6 +260,12 @@
       try { rfb?.disconnect(); } catch (_) { /* already disconnected */ }
     };
     window.codexPocketRemoteReconnect = connect;
+    window.addEventListener("resize", () => refreshScale(100));
+    window.addEventListener("orientationchange", () => refreshScale(250));
+    new ResizeObserver(() => {
+      const canvas = screen.querySelector("canvas");
+      if (canvas && canvas.getBoundingClientRect().width === 0) refreshScale(50);
+    }).observe(screen);
     connect();
   </script>
 </body>

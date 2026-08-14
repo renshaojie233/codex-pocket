@@ -11,6 +11,7 @@ export const REMOTE_DESKTOPS = Object.freeze({
     description: "Ubuntu 工作站 · 1920 × 1080",
     sshHost: "workstation",
     passwordFile: "/home/ubuntu/.vnc/passwd",
+    wakeCommand: "sudo -n env DISPLAY=:0 XAUTHORITY=/run/user/128/gdm/Xauthority /bin/sh -c 'xset dpms force on; xset s reset; xdotool key Shift_L; xdotool mousemove_relative -- 2 2'",
   }),
   agilex: Object.freeze({
     id: "agilex",
@@ -86,9 +87,25 @@ export function loadRemoteVncPassword(device) {
 }
 
 export function openRemoteVncTunnel(device) {
+  if (device.wakeCommand) {
+    try {
+      execFileSync(SSH_PATH, [
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=5",
+        device.sshHost,
+        device.wakeCommand,
+      ], {
+        encoding: null,
+        timeout: 7_000,
+        maxBuffer: 1_024,
+      });
+    } catch {
+      // A wake failure must not hide an otherwise reachable desktop. The VNC
+      // connection still opens and the user can wake it with pointer input.
+    }
+  }
   return spawn(SSH_PATH, remoteSshArgs(device), {
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
 }
-

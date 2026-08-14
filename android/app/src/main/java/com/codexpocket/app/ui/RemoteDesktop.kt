@@ -3,6 +3,7 @@ package com.codexpocket.app.ui
 import android.annotation.SuppressLint
 import android.graphics.Color as AndroidColor
 import android.net.Uri
+import android.view.View
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -344,11 +345,18 @@ internal fun RemoteDesktopSessionScreen(
                 WebView(context).apply {
                     webView = this
                     setBackgroundColor(AndroidColor.rgb(17, 18, 23))
+                    // Xiaomi/HyperOS WebView can leave a frequently-updated, scaled
+                    // 2D canvas in a black hardware-compositor layer. noVNC is a
+                    // Canvas 2D client, so keep this one WebView on the reliable
+                    // software path. The rest of Codex Pocket remains accelerated.
+                    setLayerType(View.LAYER_TYPE_SOFTWARE, null)
                     keepScreenOn = true
                     isFocusable = true
                     isFocusableInTouchMode = true
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
+                    settings.useWideViewPort = true
+                    settings.loadWithOverviewMode = true
                     settings.allowFileAccess = false
                     settings.allowContentAccess = false
                     settings.setSupportZoom(false)

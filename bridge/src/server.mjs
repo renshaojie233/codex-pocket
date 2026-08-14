@@ -29,7 +29,7 @@ import {
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.16.0";
+const VERSION = "0.16.1";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const remoteClientTemplate = readFileSync(resolve(moduleDir, "remote-client.html"), "utf8");
 const remoteAssetsRoot = realpathSync(resolve(moduleDir, "..", "node_modules", "@novnc", "novnc"));
@@ -128,7 +128,7 @@ function serveRemoteClient(req, res, url) {
       "content-type": "text/html; charset=utf-8",
       "content-length": Buffer.byteLength(html),
       "cache-control": "no-store",
-      "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src ws: wss:; img-src 'self' data: blob:; font-src 'self' data:",
+      "content-security-policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self' ws: wss:; img-src 'self' data: blob:; font-src 'self' data:",
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
     });
@@ -182,6 +182,39 @@ function serveRemoteAsset(req, res, url) {
     return;
   }
   createReadStream(path).pipe(res);
+}
+
+function receiveRemoteDiagnostic(req, res, url) {
+  if (!requestTokenMatches(req, url)) {
+    json(res, 401, { ok: false, error: "Unauthorized" });
+    return;
+  }
+  let body = "";
+  req.setEncoding("utf8");
+  req.on("data", (chunk) => {
+    body += chunk;
+    if (body.length > 8_192) req.destroy();
+  });
+  req.on("end", () => {
+    try {
+      const parsed = JSON.parse(body || "{}");
+      const diagnostic = {
+        at: new Date().toISOString(),
+        device: String(parsed.device || "").slice(0, 32),
+        event: String(parsed.event || "").slice(0, 48),
+        secure: Boolean(parsed.secure),
+        viewport: parsed.viewport,
+        canvas: parsed.canvas,
+        pixels: parsed.pixels,
+        message: String(parsed.message || "").slice(0, 240),
+        userAgent: String(parsed.userAgent || req.headers["user-agent"] || "").slice(0, 240),
+      };
+      console.log(`[remote-diagnostic] ${JSON.stringify(diagnostic)}`);
+      json(res, 200, { ok: true });
+    } catch {
+      json(res, 400, { ok: false, error: "Invalid diagnostic" });
+    }
+  });
 }
 
 const mediaContentTypes = new Map([
@@ -406,6 +439,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "GET" && url.pathname === "/remote/client") {
     serveRemoteClient(req, res, url);
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/remote/diagnostics") {
+    receiveRemoteDiagnostic(req, res, url);
     return;
   }
   if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/remote-assets/")) {
