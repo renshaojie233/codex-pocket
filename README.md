@@ -80,7 +80,7 @@ bridge/data/config.json
 APK 会生成到：
 
 ```text
-outputs/codex-pocket-0.16.9.apk
+outputs/codex-pocket-0.16.10.apk
 ```
 
 也可以在手机浏览器打开下面的私有下载页：
@@ -111,6 +111,8 @@ APK 接口支持 HTTP Range 与断点续传；移动网络中断后可直接在�
 NVIDIA NVENC 硬件编码，手机或平板使用 MediaCodec 原生硬解，支持 60fps、全屏和可选
 分辨率/码率。首次点击会提示安装一次 Codex Stream；之后从 Codex Pocket 点设备即可
 自动登记并完成配对。每台设备仍提供“兼容 VNC”，在硬件串流不可用时可以立即回退。
+Codex Stream 主界面只显示三台受管电脑，每台电脑只保留一个桌面入口；触控默认采用
+Mac 触控板逻辑：单指移动、双指滚动、双指轻点右键、三指按住移动进行拖动。
 
 Codex Stream 基于 Moonlight Android，并作为遵循 GPL-3.0 的独立开源项目发布：
 [renshaojie233/codex-stream](https://github.com/renshaojie233/codex-stream)。这样硬件串流核心
