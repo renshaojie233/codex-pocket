@@ -29,8 +29,10 @@ import {
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.16.8";
+const VERSION = "0.16.9";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
+const codexStreamPath = process.env.CODEX_STREAM_APK_PATH ||
+  resolve(moduleDir, "..", "..", "outputs", "codex-stream-1.1.0.apk");
 const remoteClientTemplate = readFileSync(resolve(moduleDir, "remote-client.html"), "utf8");
 const remoteAssetsRoot = realpathSync(resolve(moduleDir, "..", "node_modules", "@novnc", "novnc"));
 const codex = new CodexClient({ codexBin: config.codexBin });
@@ -102,6 +104,55 @@ function requestTokenMatches(request, url) {
 
 function htmlJson(value) {
   return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
+function serveApk(req, res, { path, fileName, etagName }) {
+  if (!existsSync(path)) {
+    json(res, 404, { ok: false, error: "APK is not built yet" });
+    return;
+  }
+  const apkStats = statSync(path);
+  const size = apkStats.size;
+  const etag = `"${etagName}-${size}-${Math.trunc(apkStats.mtimeMs)}"`;
+  const lastModified = apkStats.mtime.toUTCString();
+  const commonHeaders = {
+    "content-type": "application/vnd.android.package-archive",
+    "content-disposition": `attachment; filename="${fileName}"`,
+    "accept-ranges": "bytes",
+    etag,
+    "last-modified": lastModified,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  };
+  const ifRange = req.headers["if-range"];
+  const requestedRange = !ifRange || ifRange === etag || ifRange === lastModified
+    ? parseByteRange(req.headers.range, size)
+    : null;
+  if (requestedRange === false) {
+    res.writeHead(416, { ...commonHeaders, "content-range": `bytes */${size}` });
+    res.end();
+    return;
+  }
+  if (requestedRange) {
+    const { start, end } = requestedRange;
+    res.writeHead(206, {
+      ...commonHeaders,
+      "content-length": end - start + 1,
+      "content-range": `bytes ${start}-${end}/${size}`,
+    });
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+    createReadStream(path, { start, end }).pipe(res);
+    return;
+  }
+  res.writeHead(200, { ...commonHeaders, "content-length": size });
+  if (req.method === "HEAD") {
+    res.end();
+    return;
+  }
+  createReadStream(path).pipe(res);
 }
 
 function serveRemoteClient(req, res, url) {
@@ -465,7 +516,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === "GET" && req.url === "/download") {
-    const html = `<!doctype html><meta name="viewport" content="width=device-width"><title>Codex Pocket</title><style>body{font-family:system-ui;background:#f8f8fc;color:#17171c;display:grid;place-items:center;min-height:90vh;margin:0}.card{background:white;padding:32px;border-radius:24px;box-shadow:0 12px 40px #29294a18;max-width:360px;text-align:center}a{display:block;background:#625bff;color:white;text-decoration:none;padding:15px 20px;border-radius:16px;font-weight:650;margin-top:24px}small{color:#686876}</style><div class="card"><h1>Codex Pocket</h1><p>小米手机专用测试版</p><a href="/download/codex-pocket.apk">下载 APK</a><p><small>需要 Android 8.0 或更高版本</small></p></div>`;
+    const html = `<!doctype html><meta name="viewport" content="width=device-width"><title>Codex Pocket</title><style>body{font-family:system-ui;background:#f8f8fc;color:#17171c;display:grid;place-items:center;min-height:90vh;margin:0}.card{background:white;padding:32px;border-radius:24px;box-shadow:0 12px 40px #29294a18;max-width:360px;text-align:center}a{display:block;background:#625bff;color:white;text-decoration:none;padding:15px 20px;border-radius:16px;font-weight:650;margin-top:16px}a.secondary{background:#efedff;color:#5148e5}small{color:#686876}</style><div class="card"><h1>Codex Pocket</h1><p>小米手机专用测试版</p><a href="/download/codex-pocket.apk">下载 Codex Pocket</a><a class="secondary" href="/download/codex-stream.apk">下载 Codex Stream 极致串流</a><p><small>先安装 Pocket；使用远程桌面极致模式时再安装 Stream</small></p></div>`;
     res.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
       "content-length": Buffer.byteLength(html),
@@ -474,53 +525,20 @@ const server = http.createServer((req, res) => {
     res.end(html);
     return;
   }
-  if ((req.method === "GET" || req.method === "HEAD") && req.url === "/download/codex-pocket.apk") {
-    if (!existsSync(apkPath)) {
-      json(res, 404, { ok: false, error: "APK is not built yet" });
-      return;
-    }
-    const apkStats = statSync(apkPath);
-    const size = apkStats.size;
-    const etag = `"codex-pocket-${VERSION}-${size}-${Math.trunc(apkStats.mtimeMs)}"`;
-    const lastModified = apkStats.mtime.toUTCString();
-    const commonHeaders = {
-      "content-type": "application/vnd.android.package-archive",
-      "content-disposition": `attachment; filename="codex-pocket-${VERSION}.apk"`,
-      "accept-ranges": "bytes",
-      "etag": etag,
-      "last-modified": lastModified,
-      "cache-control": "no-store",
-      "x-content-type-options": "nosniff",
-    };
-    const ifRange = req.headers["if-range"];
-    const requestedRange = !ifRange || ifRange === etag || ifRange === lastModified
-      ? parseByteRange(req.headers.range, size)
-      : null;
-    if (requestedRange === false) {
-      res.writeHead(416, { ...commonHeaders, "content-range": `bytes */${size}` });
-      res.end();
-      return;
-    }
-    if (requestedRange) {
-      const { start, end } = requestedRange;
-      res.writeHead(206, {
-        ...commonHeaders,
-        "content-length": end - start + 1,
-        "content-range": `bytes ${start}-${end}/${size}`,
-      });
-      if (req.method === "HEAD") {
-        res.end();
-        return;
-      }
-      createReadStream(apkPath, { start, end }).pipe(res);
-      return;
-    }
-    res.writeHead(200, { ...commonHeaders, "content-length": size });
-    if (req.method === "HEAD") {
-      res.end();
-      return;
-    }
-    createReadStream(apkPath).pipe(res);
+  if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/download/codex-pocket.apk") {
+    serveApk(req, res, {
+      path: apkPath,
+      fileName: `codex-pocket-${VERSION}.apk`,
+      etagName: `codex-pocket-${VERSION}`,
+    });
+    return;
+  }
+  if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/download/codex-stream.apk") {
+    serveApk(req, res, {
+      path: codexStreamPath,
+      fileName: "codex-stream-1.1.0.apk",
+      etagName: "codex-stream-1.1.0",
+    });
     return;
   }
   json(res, 404, { ok: false, error: "Not found" });

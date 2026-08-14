@@ -83,6 +83,21 @@ test("proxies an authenticated direct WebSocket to local VNC", async t => {
   );
   assert.equal(unauthorized.status, 401);
 
+  const extremeUnauthorized = await fetch(
+    `http://127.0.0.1:${gatewayPort}/remote/extreme/status?token=wrong`,
+  );
+  assert.equal(extremeUnauthorized.status, 401);
+
+  const invalidPair = await fetch(
+    `http://127.0.0.1:${gatewayPort}/remote/extreme/pair?token=test-token`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pin: "12" }),
+    },
+  );
+  assert.equal(invalidPair.status, 400);
+
   const page = await fetch(
     `http://127.0.0.1:${gatewayPort}/remote/client?device=test-device&token=test-token`,
   );

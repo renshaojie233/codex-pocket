@@ -12,6 +12,10 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
+    <queries>
+        <package android:name="com.codexpocket.stream" />
+    </queries>
+
     <application
         android:allowBackup="true"
         android:enableOnBackInvokedCallback="true"

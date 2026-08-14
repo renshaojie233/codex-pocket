@@ -213,6 +213,8 @@ fun CodexPocketApp(viewModel: MainViewModel) {
             when (screen) {
                 "connect" -> ConnectionScreen(state, viewModel)
                 "remote-list" -> RemoteDesktopListScreen(
+                    endpoint = state.endpoint,
+                    token = state.token,
                     onBack = { remoteRoute = null },
                     onConnect = { remoteRoute = it.id },
                 )

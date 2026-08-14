@@ -1,9 +1,12 @@
 package com.codexpocket.app.ui
 
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -34,6 +37,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -59,6 +63,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import java.net.URI
 
 internal data class RemoteDesktopDevice(
     val id: String,
@@ -138,9 +143,12 @@ internal fun RemoteDesktopLauncherCard(onClick: () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun RemoteDesktopListScreen(
+    endpoint: String,
+    token: String,
     onBack: () -> Unit,
     onConnect: (RemoteDesktopDevice) -> Unit,
 ) {
+    val context = LocalContext.current
     BackHandler(onBack = onBack)
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -190,9 +198,9 @@ internal fun RemoteDesktopListScreen(
                             tint = MaterialTheme.colorScheme.primary,
                         )
                         Column(Modifier.padding(start = 12.dp)) {
-                            Text("手机 / 平板直接连接目标电脑", fontWeight = FontWeight.SemiBold)
+                            Text("NVENC 极致模式", fontWeight = FontWeight.SemiBold)
                             Text(
-                                "屏幕数据走 Tailscale 点对点链路，不经过 Mac，也不开放公网端口。",
+                                "默认 1080p / 60fps 硬件串流，手机原生硬解；仍可随时切回兼容模式。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -201,11 +209,22 @@ internal fun RemoteDesktopListScreen(
                 }
             }
             items(remoteDesktopDevices, key = { it.id }) { device ->
-                RemoteDesktopDeviceCard(device, onClick = { onConnect(device) })
+                RemoteDesktopDeviceCard(
+                    device = device,
+                    onExtremeClick = {
+                        launchCodexStream(
+                            context = context,
+                            endpoint = endpoint,
+                            token = token,
+                            device = device,
+                        )
+                    },
+                    onCompatibilityClick = { onConnect(device) },
+                )
             }
             item {
                 Text(
-                    "触控：单击为左键，双击后拖动可拖拽，两指滑动与缩放。进入桌面后可打开软键盘。",
+                    "首次使用会提示安装一次 Codex Stream。之后点击电脑即可自动登记和配对；分辨率、码率、帧率与解码器可在串流设置中调整。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
@@ -216,59 +235,129 @@ internal fun RemoteDesktopListScreen(
 }
 
 @Composable
-private fun RemoteDesktopDeviceCard(device: RemoteDesktopDevice, onClick: () -> Unit) {
+private fun RemoteDesktopDeviceCard(
+    device: RemoteDesktopDevice,
+    onExtremeClick: () -> Unit,
+    onCompatibilityClick: () -> Unit,
+) {
     Card(
-        onClick = onClick,
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        modifier = Modifier.fillMaxWidth().height(116.dp),
+        modifier = Modifier.fillMaxWidth().height(146.dp),
     ) {
-        Row(
-            Modifier.fillMaxSize().padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier.size(48.dp).clip(RoundedCornerShape(15.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Rounded.Computer,
-                    null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(25.dp),
-                )
-            }
-            Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(device.name, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.size(8.dp))
-                    Box(Modifier.size(7.dp).clip(CircleShape).background(Color(0xFF36B37E)))
+        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.size(48.dp).clip(RoundedCornerShape(15.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Rounded.Computer,
+                        null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(25.dp),
+                    )
                 }
-                Text(
-                    device.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    device.routeDescription,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
+                Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(device.name, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.size(8.dp))
+                        Box(Modifier.size(7.dp).clip(CircleShape).background(Color(0xFF36B37E)))
+                    }
+                    Text(
+                        device.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        "硬件串流 · Tailscale 直连",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                TextButton(onClick = onExtremeClick) {
+                    Text("极致模式")
+                    Icon(
+                        Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                        "连接 ${device.name}",
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
             }
-            Icon(
-                Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-                "连接 ${device.name}",
-                tint = MaterialTheme.colorScheme.outline,
-            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "NVENC → 原生硬解",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onCompatibilityClick) { Text("兼容 VNC") }
+            }
         }
     }
+}
+
+private const val CODEX_STREAM_PACKAGE = "com.codexpocket.stream"
+private const val CODEX_STREAM_ACTIVITY = "com.limelight.PcView"
+private const val CODEX_STREAM_HOST = "com.codexpocket.stream.extra.HOST"
+private const val CODEX_STREAM_TOKEN = "com.codexpocket.stream.extra.TOKEN"
+private const val CODEX_STREAM_GATEWAY_PORT = "com.codexpocket.stream.extra.GATEWAY_PORT"
+
+private fun launchCodexStream(
+    context: Context,
+    endpoint: String,
+    token: String,
+    device: RemoteDesktopDevice,
+) {
+    val installed = runCatching {
+        context.packageManager.getPackageInfo(CODEX_STREAM_PACKAGE, 0)
+    }.isSuccess
+    if (!installed) {
+        val download = Intent(Intent.ACTION_VIEW, Uri.parse(codexStreamDownloadUrl(endpoint))).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { context.startActivity(download) }
+            .onSuccess {
+                Toast.makeText(context, "请先安装 Codex Stream；安装后再点一次极致模式", Toast.LENGTH_LONG).show()
+            }
+            .onFailure {
+                Toast.makeText(context, "无法打开 Codex Stream 下载地址", Toast.LENGTH_LONG).show()
+            }
+        return
+    }
+
+    val host = Uri.parse(device.directEndpoint).host.orEmpty()
+    val intent = Intent().apply {
+        component = ComponentName(CODEX_STREAM_PACKAGE, CODEX_STREAM_ACTIVITY)
+        putExtra(CODEX_STREAM_HOST, host)
+        putExtra(CODEX_STREAM_TOKEN, token)
+        putExtra(CODEX_STREAM_GATEWAY_PORT, 8790)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    runCatching { context.startActivity(intent) }
+        .onFailure {
+            Toast.makeText(context, "Codex Stream 启动失败，请重新安装", Toast.LENGTH_LONG).show()
+        }
+}
+
+internal fun codexStreamDownloadUrl(endpoint: String): String {
+    val bridge = URI(endpoint)
+    val scheme = if (bridge.scheme == "wss") "https" else "http"
+    return URI(
+        scheme,
+        null,
+        bridge.host,
+        bridge.port,
+        "/download/codex-stream.apk",
+        null,
+        null,
+    ).toString()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

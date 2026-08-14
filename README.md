@@ -39,7 +39,7 @@ flowchart LR
 - 选择模型、思考强度、Default / Plan、Goal 与 Fast 模式。
 - 设置只读、工作区或完全访问权限；初始默认是完全访问。
 - 管理自动化任务、查看账户用量，并接收完成通知与震动。
-- 在同一个 APK 中直连并控制 Workstation、Agilex 或 RSJ PC，支持触控、软键盘、缩放、画质选择和自动重连。
+- 直连控制 Workstation、Agilex 或 RSJ PC；极致模式使用 Sunshine + NVIDIA NVENC 和 Android 原生硬解，兼容模式保留 VNC。
 - 远程画面支持智能、低延迟、均衡、省电四种刷新模式；智能模式在操作时提升至约 20 FPS，静止后自动降帧。
 - 支持 Android 全面屏侧滑返回：聊天返回任务列表，远程桌面返回设备列表；根页面需连续返回两次才退到后台。
 
@@ -80,7 +80,7 @@ bridge/data/config.json
 APK 会生成到：
 
 ```text
-outputs/codex-pocket-0.16.8.apk
+outputs/codex-pocket-0.16.9.apk
 ```
 
 也可以在手机浏览器打开下面的私有下载页：
@@ -107,9 +107,14 @@ APK 接口支持 HTTP Range 与断点续传；移动网络中断后可直接在�
 运行 `bridge/direct-remote/` 中的轻量网关，并只绑定自己的 Tailscale IPv4；网关再
 连接该电脑仅监听 localhost 的 VNC 服务。VNC 和网关端口都无需开放到公网。
 
-Android 端默认使用智能 30 帧刷新，并只编码桌面发生变化的区域；支持二进制帧传输、
-原始 1920 × 1080 清晰度和隐藏应用栏及系统栏的全屏显示。打开远程桌面的悬浮工具，
-在“画面”中可分别调整清晰度、刷新策略和全屏状态。
+默认的“极致模式”通过独立的开源 Codex Stream 客户端连接 Sunshine：目标电脑使用
+NVIDIA NVENC 硬件编码，手机或平板使用 MediaCodec 原生硬解，支持 60fps、全屏和可选
+分辨率/码率。首次点击会提示安装一次 Codex Stream；之后从 Codex Pocket 点设备即可
+自动登记并完成配对。每台设备仍提供“兼容 VNC”，在硬件串流不可用时可以立即回退。
+
+Codex Stream 基于 Moonlight Android，并作为遵循 GPL-3.0 的独立开源项目发布：
+[renshaojie233/codex-stream](https://github.com/renshaojie233/codex-stream)。这样硬件串流核心
+保持可审计和可更新，同时 Codex Pocket 不会把上游 GPL 代码混入自己的 APK。
 
 设备地址在 `android/app/src/main/java/com/codexpocket/app/ui/RemoteDesktop.kt` 中明确
 列出。直连网关使用与 Bridge 相同的随机配对令牌，因此手机不保存 VNC 密码或 SSH

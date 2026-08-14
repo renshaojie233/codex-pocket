@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import http from "node:http";
 import net from "node:net";
+import tls from "node:tls";
 import { dirname, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
@@ -32,6 +33,9 @@ const config = Object.freeze({
   vncHost: process.env.VNC_HOST || "127.0.0.1",
   vncPort: positiveInteger(process.env.VNC_PORT || "5900", "VNC_PORT"),
   passwordFile: process.env.VNC_PASSWORD_FILE || "",
+  sunshineUrl: process.env.SUNSHINE_URL || "",
+  sunshineUsername: process.env.SUNSHINE_USERNAME || "codexpocket",
+  sunshinePasswordFile: process.env.SUNSHINE_PASSWORD_FILE || "",
 });
 
 function required(name) {
@@ -94,6 +98,132 @@ function loadPassword() {
   if (!config.passwordFile) return "";
   const encrypted = readFileSync(config.passwordFile);
   return decryptVncPassword(encrypted);
+}
+
+function loadSunshinePassword() {
+  if (!config.sunshinePasswordFile) throw new Error("Sunshine pairing is not configured");
+  return readFileSync(config.sunshinePasswordFile, "utf8").trim();
+}
+
+function readJsonBody(req, maximumBytes = 2048) {
+  return new Promise((resolveBody, rejectBody) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", chunk => {
+      size += chunk.length;
+      if (size > maximumBytes) {
+        rejectBody(new Error("Request body is too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      try {
+        resolveBody(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"));
+      } catch {
+        rejectBody(new Error("Invalid JSON body"));
+      }
+    });
+    req.on("error", rejectBody);
+  });
+}
+
+function sunshineRequest(pathname, { method = "GET", body = null, authenticated = false } = {}) {
+  if (!config.sunshineUrl) return Promise.reject(new Error("Sunshine is not configured"));
+  const target = new URL(pathname, config.sunshineUrl);
+  if (target.protocol !== "https:") return Promise.reject(new Error("Sunshine URL must use HTTPS"));
+  const payload = body == null ? null : Buffer.from(JSON.stringify(body));
+  return new Promise((resolveRequest, rejectRequest) => {
+    const socket = tls.connect({
+      host: target.hostname,
+      port: Number(target.port || 443),
+      rejectUnauthorized: false,
+    });
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    const fail = error => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      rejectRequest(error);
+    };
+    socket.setTimeout(3_000, () => fail(new Error("Sunshine timed out")));
+    socket.on("error", fail);
+    socket.on("secureConnect", () => {
+      const headers = [
+        `${method} ${target.pathname}${target.search} HTTP/1.1`,
+        `Host: ${target.host}`,
+        "Connection: close",
+      ];
+      if (authenticated) {
+        const credentials = Buffer.from(`${config.sunshineUsername}:${loadSunshinePassword()}`)
+          .toString("base64");
+        headers.push(`Authorization: Basic ${credentials}`);
+      }
+      if (payload) {
+        headers.push("Content-Type: application/json", `Content-Length: ${payload.length}`);
+      }
+      socket.write(`${headers.join("\r\n")}\r\n\r\n`);
+      if (payload) socket.write(payload);
+    });
+    socket.on("data", chunk => {
+      size += chunk.length;
+      if (size > 64 * 1024) {
+        fail(new Error("Sunshine response is too large"));
+      } else {
+        chunks.push(chunk);
+      }
+    });
+    socket.on("end", () => {
+      if (settled) return;
+      settled = true;
+      const raw = Buffer.concat(chunks).toString("utf8");
+      const separator = raw.indexOf("\r\n\r\n");
+      const status = Number.parseInt(raw.match(/^HTTP\/\d\.\d\s+(\d{3})/)?.[1] || "500", 10);
+      const responseBody = separator >= 0 ? raw.slice(separator + 4) : "";
+      let parsed = null;
+      try { parsed = responseBody ? JSON.parse(responseBody) : null; } catch { /* XML or empty response */ }
+      if (status >= 400) {
+        rejectRequest(new Error(parsed?.error || `Sunshine returned HTTP ${status}`));
+      } else {
+        resolveRequest(parsed);
+      }
+    });
+  });
+}
+
+async function serveExtremeStatus(res) {
+  try {
+    await sunshineRequest("/api/configLocale");
+    json(res, 200, { ok: true, available: true, engine: "sunshine-nvenc" });
+  } catch (error) {
+    json(res, 503, { ok: false, available: false, error: error.message });
+  }
+}
+
+async function serveExtremePair(req, res) {
+  try {
+    const body = await readJsonBody(req);
+    const pin = String(body?.pin || "");
+    if (!/^\d{4}$/.test(pin)) {
+      json(res, 400, { ok: false, error: "PIN must contain four digits" });
+      return;
+    }
+    const result = await sunshineRequest("/api/pin", {
+      method: "POST",
+      authenticated: true,
+      body: { pin, name: String(body?.name || "Codex Stream").slice(0, 80) },
+    });
+    if (result?.status !== true) {
+      json(res, 409, { ok: false, error: "Sunshine did not accept this pairing PIN" });
+      return;
+    }
+    json(res, 200, { ok: true, paired: true });
+  } catch (error) {
+    json(res, 503, { ok: false, error: error.message });
+  }
 }
 
 function serveClient(req, res, url) {
@@ -184,6 +314,22 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "GET" && url.pathname === "/remote/client") {
     serveClient(req, res, url);
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/remote/extreme/status") {
+    if (!requestTokenMatches(req, url)) {
+      json(res, 401, { ok: false, error: "Unauthorized" });
+    } else {
+      void serveExtremeStatus(res);
+    }
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/remote/extreme/pair") {
+    if (!requestTokenMatches(req, url)) {
+      json(res, 401, { ok: false, error: "Unauthorized" });
+    } else {
+      void serveExtremePair(req, res);
+    }
     return;
   }
   if ((req.method === "GET" || req.method === "HEAD") && url.pathname.startsWith("/remote-assets/")) {
