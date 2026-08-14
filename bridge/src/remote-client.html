@@ -73,7 +73,8 @@
     const frameMirror = document.getElementById("frameMirror");
     const keyboardPanel = document.getElementById("keyboardPanel");
     const keyboardInput = document.getElementById("keyboardInput");
-    const useFrameMirror = /\bwv\)/i.test(navigator.userAgent);
+    const renderMode = new URLSearchParams(location.search).get("render") || "compat";
+    const useFrameMirror = /\bwv\)/i.test(navigator.userAgent) && renderMode !== "hardware";
     const mirrorBuffer = document.createElement("canvas");
     let rfb = null;
     let scaleToFit = true;
@@ -86,6 +87,7 @@
       const payload = {
         device: device.id,
         event,
+        renderMode,
         secure: window.isSecureContext,
         viewport: { width: innerWidth, height: innerHeight, dpr: devicePixelRatio },
         userAgent: navigator.userAgent,

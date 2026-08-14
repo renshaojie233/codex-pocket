@@ -29,7 +29,7 @@ import {
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.16.1";
+const VERSION = "0.16.2";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const remoteClientTemplate = readFileSync(resolve(moduleDir, "remote-client.html"), "utf8");
 const remoteAssetsRoot = realpathSync(resolve(moduleDir, "..", "node_modules", "@novnc", "novnc"));
@@ -202,6 +202,7 @@ function receiveRemoteDiagnostic(req, res, url) {
         at: new Date().toISOString(),
         device: String(parsed.device || "").slice(0, 32),
         event: String(parsed.event || "").slice(0, 48),
+        renderMode: String(parsed.renderMode || "").slice(0, 24),
         secure: Boolean(parsed.secure),
         viewport: parsed.viewport,
         canvas: parsed.canvas,

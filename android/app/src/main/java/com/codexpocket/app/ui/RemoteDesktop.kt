@@ -345,11 +345,10 @@ internal fun RemoteDesktopSessionScreen(
                 WebView(context).apply {
                     webView = this
                     setBackgroundColor(AndroidColor.rgb(17, 18, 23))
-                    // Xiaomi/HyperOS WebView can leave a frequently-updated, scaled
-                    // 2D canvas in a black hardware-compositor layer. noVNC is a
-                    // Canvas 2D client, so keep this one WebView on the reliable
-                    // software path. The rest of Codex Pocket remains accelerated.
-                    setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+                    // Keep the remote surface in its own hardware layer. HyperOS
+                    // does not composite dynamically generated Canvas/Blob frames
+                    // from a software WebView, even though DOM controls still draw.
+                    setLayerType(View.LAYER_TYPE_HARDWARE, null)
                     keepScreenOn = true
                     isFocusable = true
                     isFocusableInTouchMode = true
@@ -390,6 +389,7 @@ internal fun remoteDesktopClientUrl(endpoint: String, token: String, deviceId: S
         .path("/remote/client")
         .appendQueryParameter("device", deviceId)
         .appendQueryParameter("token", token)
+        .appendQueryParameter("render", "hardware")
         .build()
         .toString()
 }
