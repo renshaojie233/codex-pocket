@@ -10,9 +10,11 @@ import { pipeline, Transform } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { CodexClient } from "./codex-client.mjs";
+import { CameraProvider, MjpegMultipartTransform } from "./cameras.mjs";
 import { parseByteRange } from "./http-range.mjs";
 import { EventJournal } from "./event-journal.mjs";
 import { loadConfig } from "./config.mjs";
+import { DeviceStatusProvider } from "./device-status.mjs";
 import { mapModel, mapNotification, mapThreadDetail, mapThreadSummary } from "./mapper.mjs";
 import { MutationReceipts } from "./mutation-receipts.mjs";
 import {
@@ -29,7 +31,7 @@ import {
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.16.11";
+const VERSION = "0.17.0";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const codexStreamPath = process.env.CODEX_STREAM_APK_PATH ||
   resolve(moduleDir, "..", "..", "outputs", "codex-stream-1.3.7.apk");
@@ -43,6 +45,8 @@ const remoteSockets = new Set();
 const remoteTunnels = new Map();
 const eventJournal = new EventJournal();
 const mutationReceipts = new MutationReceipts();
+const deviceStatus = new DeviceStatusProvider();
+const cameras = new CameraProvider(deviceStatus);
 const automationsRoot = resolve(homedir(), ".codex", "automations");
 const uploadRoot = resolve(moduleDir, "..", "data", "uploads");
 const DEFAULT_PERMISSION_PROFILE = ":danger-full-access";
@@ -50,6 +54,7 @@ const DEFAULT_MESSAGE_LIMIT = 120;
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 const MAX_UPLOAD_FILES = 400;
 const MAX_UPLOAD_STORAGE_BYTES = 1024 * 1024 * 1024;
+const CAMERA_BOUNDARY = "codex-pocket-frame";
 
 mkdirSync(uploadRoot, { recursive: true });
 
@@ -190,6 +195,64 @@ function serveRemoteClient(req, res, url) {
       error: `无法读取 ${device.name} 的远程桌面配置：${error.message}`,
     });
   }
+}
+
+async function serveCameraStream(req, res, url) {
+  if (!requestTokenMatches(req, url)) {
+    json(res, 401, { ok: false, error: "Unauthorized" });
+    return;
+  }
+  const deviceId = url.searchParams.get("device") || "";
+  const cameraId = url.searchParams.get("camera") || "";
+  if (!deviceId || !cameraId) {
+    json(res, 400, { ok: false, error: "缺少设备或摄像头参数" });
+    return;
+  }
+
+  let stream;
+  try {
+    stream = await cameras.openStream(deviceId, cameraId);
+  } catch (error) {
+    json(res, 503, {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
+  const { child } = stream;
+  const multipart = new MjpegMultipartTransform(CAMERA_BOUNDARY);
+  let stderr = "";
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    multipart.destroy();
+    if (!child.killed) child.kill("SIGTERM");
+  };
+  child.stderr.on("data", (chunk) => {
+    stderr = `${stderr}${chunk.toString("utf8")}`.slice(-800);
+  });
+  child.once("error", (error) => {
+    console.error(`[camera] ${deviceId}/${cameraId}: ${error.message}`);
+    if (!res.headersSent) json(res, 502, { ok: false, error: "无法连接摄像头" });
+    else res.end();
+  });
+  child.once("exit", (code) => {
+    if (code && !closed) console.error(`[camera] ${deviceId}/${cameraId} exited ${code}: ${stderr.trim()}`);
+    if (!res.writableEnded) res.end();
+  });
+  req.once("aborted", close);
+  res.once("close", close);
+
+  res.writeHead(200, {
+    "content-type": `multipart/x-mixed-replace; boundary=${CAMERA_BOUNDARY}`,
+    "cache-control": "no-store, no-cache, must-revalidate",
+    pragma: "no-cache",
+    connection: "keep-alive",
+    "x-content-type-options": "nosniff",
+  });
+  child.stdout.pipe(multipart).pipe(res);
 }
 
 function serveRemoteAsset(req, res, url) {
@@ -468,7 +531,7 @@ function handleImageUpload(req, res) {
   });
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://bridge.local");
   if (req.method === "GET" && url.pathname === "/health") {
     json(res, 200, {
@@ -493,6 +556,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "GET" && url.pathname === "/remote/client") {
     serveRemoteClient(req, res, url);
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/camera/stream") {
+    await serveCameraStream(req, res, url);
     return;
   }
   if (req.method === "POST" && url.pathname === "/remote/diagnostics") {
@@ -782,6 +849,10 @@ function flattenRateLimits(result) {
 async function handleRequest(message) {
   const params = message.params || {};
   switch (message.method) {
+    case "devices.status":
+      return deviceStatus.snapshot({ force: params.force === true });
+    case "cameras.list":
+      return cameras.inventory({ force: params.force === true });
     case "bridge.ping":
       return { now: Date.now() };
     case "events.replay":
@@ -1138,6 +1209,7 @@ wss.on("connection", (ws, request) => {
       "threads", "create", "archive", "directories", "history", "streaming",
       "interrupt", "steer", "models", "reasoning", "approvals", "media", "usage",
       "modes", "goal", "fast", "automations", "permissions", "remote-desktop",
+      "device-monitor", "cameras",
     ],
   });
 
@@ -1241,6 +1313,7 @@ function shutdown() {
   for (const tunnel of remoteTunnels.values()) {
     if (!tunnel.killed) tunnel.kill("SIGTERM");
   }
+  cameras.stop();
   server.close();
   codex.stop();
 }

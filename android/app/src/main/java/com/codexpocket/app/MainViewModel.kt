@@ -17,10 +17,13 @@ import com.codexpocket.app.media.PocketMediaLoader
 import com.codexpocket.app.model.ActivityEntry
 import com.codexpocket.app.model.AccountStatus
 import com.codexpocket.app.model.AutomationSummary
+import com.codexpocket.app.model.CameraDevice
+import com.codexpocket.app.model.CameraSource
 import com.codexpocket.app.model.ChatMessage
 import com.codexpocket.app.model.CodexModeOption
 import com.codexpocket.app.model.ConnectionState
 import com.codexpocket.app.model.DirectoryEntry
+import com.codexpocket.app.model.DeviceGpuStatus
 import com.codexpocket.app.model.MediaAttachment
 import com.codexpocket.app.model.ModelOption
 import com.codexpocket.app.model.PendingApproval
@@ -28,6 +31,7 @@ import com.codexpocket.app.model.PendingImage
 import com.codexpocket.app.model.PermissionProfileOption
 import com.codexpocket.app.model.ReasoningEffortOption
 import com.codexpocket.app.model.ServiceTierOption
+import com.codexpocket.app.model.SshDeviceStatus
 import com.codexpocket.app.model.ThreadGoal
 import com.codexpocket.app.model.ThreadSummary
 import com.codexpocket.app.model.UiState
@@ -1368,6 +1372,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         }
     }
 
+    fun loadDeviceStatus(force: Boolean = false) {
+        if (_state.value.isDeviceStatusLoading && !force) return
+        _state.update { it.copy(isDeviceStatusLoading = true) }
+        client.request("devices.status", JSONObject().put("force", force)) { result ->
+            onMain {
+                result.fold(
+                    onSuccess = { payload ->
+                        val devices = buildList {
+                            val source = payload.optJSONArray("devices") ?: JSONArray()
+                            for (index in 0 until source.length()) {
+                                parseSshDevice(source.optJSONObject(index))?.let(::add)
+                            }
+                        }
+                        _state.update {
+                            it.copy(
+                                sshDevices = devices,
+                                deviceStatusUpdated = payload.optString("updated"),
+                                isDeviceStatusLoading = false,
+                            )
+                        }
+                    },
+                    onFailure = {
+                        _state.update { state -> state.copy(isDeviceStatusLoading = false) }
+                        fail(it.message ?: "无法读取设备状态")
+                    },
+                )
+            }
+        }
+    }
+
+    fun loadCameras(force: Boolean = false) {
+        if (_state.value.isCameraListLoading && !force) return
+        _state.update { it.copy(isCameraListLoading = true) }
+        client.request("cameras.list", JSONObject().put("force", force)) { result ->
+            onMain {
+                result.fold(
+                    onSuccess = { payload ->
+                        val devices = buildList {
+                            val source = payload.optJSONArray("devices") ?: JSONArray()
+                            for (index in 0 until source.length()) {
+                                parseCameraDevice(source.optJSONObject(index))?.let(::add)
+                            }
+                        }
+                        _state.update {
+                            it.copy(
+                                cameraDevices = devices,
+                                cameraStatusUpdated = payload.optString("updated"),
+                                isCameraListLoading = false,
+                            )
+                        }
+                    },
+                    onFailure = {
+                        _state.update { state -> state.copy(isCameraListLoading = false) }
+                        fail(it.message ?: "无法读取摄像头列表")
+                    },
+                )
+            }
+        }
+    }
+
     fun setAutomationActive(id: String, active: Boolean) {
         _state.update { it.copy(updatingAutomationId = id, error = null) }
         client.request(
@@ -1585,6 +1649,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
         if (previous.models.isEmpty()) loadModels()
         if (previous.modes.isEmpty()) loadModes()
         if (previous.permissionProfiles.isEmpty()) loadPermissionProfiles()
+        loadDeviceStatus()
+        loadCameras()
     }
 
     override fun onDisconnected(reason: String?) = onMain {
@@ -2196,6 +2262,78 @@ class MainViewModel(application: Application) : AndroidViewModel(application), B
             targetThreadId = item.optString("targetThreadId").ifBlank { null },
             promptPreview = item.optString("promptPreview"),
             updatedAt = item.optLong("updatedAt"),
+        )
+    }
+
+    private fun parseSshDevice(item: JSONObject?): SshDeviceStatus? {
+        if (item == null) return null
+        val id = item.optString("alias")
+        if (id.isBlank()) return null
+        val gpus = buildList {
+            val source = item.optJSONArray("gpus") ?: JSONArray()
+            for (index in 0 until source.length()) {
+                val gpu = source.optJSONObject(index) ?: continue
+                add(
+                    DeviceGpuStatus(
+                        index = gpu.optString("index"),
+                        name = gpu.optString("name", "GPU"),
+                        utilization = gpu.optDouble("utilization"),
+                        memoryUsedMb = gpu.optDouble("memory_used_mb"),
+                        memoryTotalMb = gpu.optDouble("memory_total_mb"),
+                        temperature = gpu.optDouble("temperature"),
+                        powerWatts = gpu.optDouble("power_watts"),
+                    ),
+                )
+            }
+        }
+        return SshDeviceStatus(
+            id = id,
+            name = item.optString("name", id),
+            category = item.optString("category", "SSH 设备"),
+            address = item.optString("address"),
+            online = item.optBoolean("online"),
+            latencyMs = item.optLong("latency_ms"),
+            hostname = item.optString("hostname"),
+            os = item.optString("os"),
+            uptimeSeconds = item.optLong("uptime_seconds"),
+            cpuPercent = item.optDouble("cpu_percent"),
+            cpuCount = item.optInt("cpu_count"),
+            memoryTotal = item.optLong("memory_total"),
+            memoryUsed = item.optLong("memory_used"),
+            diskTotal = item.optLong("disk_total"),
+            diskUsed = item.optLong("disk_used"),
+            gpus = gpus,
+            error = item.optString("error"),
+        )
+    }
+
+    private fun parseCameraDevice(item: JSONObject?): CameraDevice? {
+        if (item == null) return null
+        val id = item.optString("id")
+        if (id.isBlank()) return null
+        val cameras = buildList {
+            val source = item.optJSONArray("cameras") ?: JSONArray()
+            for (index in 0 until source.length()) {
+                val camera = source.optJSONObject(index) ?: continue
+                val cameraId = camera.optString("id")
+                if (cameraId.isBlank()) continue
+                add(
+                    CameraSource(
+                        id = cameraId,
+                        name = camera.optString("name", cameraId),
+                        detail = camera.optString("detail"),
+                        kind = camera.optString("kind"),
+                        available = camera.optBoolean("available", true),
+                    ),
+                )
+            }
+        }
+        return CameraDevice(
+            id = id,
+            name = item.optString("name", id),
+            online = item.optBoolean("online"),
+            cameras = cameras,
+            error = item.optString("error"),
         )
     }
 

@@ -39,6 +39,9 @@ flowchart LR
 - 选择模型、思考强度、Default / Plan、Goal 与 Fast 模式。
 - 设置只读、工作区或完全访问权限；初始默认是完全访问。
 - 管理自动化任务、查看账户用量，并接收完成通知与震动。
+- 自动把 `<heartbeat>` 监控回报渲染成紧凑的状态卡；默认折叠，点击即可查看完整内容。
+- 设备中心复用 Mac 的 `~/.ssh/config`，集中显示在线状态、延迟、CPU、内存、磁盘和 GPU。
+- 从设备中心选择并观看在线 Linux 设备的摄像头；视频只实时转发，不在 Mac 或手机落盘。
 - 直连控制 Workstation、Agilex 或 RSJ PC；极致模式使用 Sunshine + NVIDIA NVENC 和 Android 原生硬解，兼容模式保留 VNC。
 - 远程画面支持智能、低延迟、均衡、省电四种刷新模式；智能模式在操作时提升至约 20 FPS，静止后自动降帧。
 - 支持 Android 全面屏侧滑返回：聊天返回任务列表，远程桌面返回设备列表；根页面需连续返回两次才退到后台。
@@ -80,7 +83,7 @@ bridge/data/config.json
 APK 会生成到：
 
 ```text
-outputs/codex-pocket-0.16.11.apk
+outputs/codex-pocket-0.17.0.apk
 ```
 
 也可以在手机浏览器打开下面的私有下载页：
@@ -100,7 +103,21 @@ APK 接口支持 HTTP Range 与断点续传；移动网络中断后可直接在�
 
 以后只要 Mac 已登录系统、Tailscale 在线，就可以直接从手机连接。
 
-### 4. 远程桌面（可选）
+### 4. SSH 设备与摄像头（可选）
+
+首页“设备与摄像头”会直接读取 Mac 的 `~/.ssh/config`，不需要在 App 里重复维护
+服务器地址。摄像头观看需要给目标 Linux 设备安装一个小型采集脚本：
+
+```bash
+./bridge/scripts/install-camera-streamers.sh
+```
+
+默认安装到 `workstation agilex rsj-pc laptop`；可通过
+`CODEX_POCKET_CAMERA_HOSTS="host-a host-b"` 指定自己的 SSH 别名。Bridge 只监听私有网络，
+所有状态和摄像头请求都需要配对令牌。采集器发现摄像头已被任务占用时会拒绝打开，
+避免干扰正在进行的数据采集。
+
+### 5. 远程桌面（可选）
 
 首页的“远程桌面”入口列出 `workstation`、`agilex` 和 `rsj-pc`。
 屏幕链路为“手机 / 平板 → Tailscale → 目标电脑”，不经过 Mac Bridge。每台目标机

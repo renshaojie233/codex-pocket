@@ -133,6 +133,52 @@ data class AutomationSummary(
     val updatedAt: Long = 0,
 )
 
+data class DeviceGpuStatus(
+    val index: String,
+    val name: String,
+    val utilization: Double,
+    val memoryUsedMb: Double,
+    val memoryTotalMb: Double,
+    val temperature: Double,
+    val powerWatts: Double,
+)
+
+data class SshDeviceStatus(
+    val id: String,
+    val name: String,
+    val category: String,
+    val address: String,
+    val online: Boolean,
+    val latencyMs: Long,
+    val hostname: String,
+    val os: String,
+    val uptimeSeconds: Long,
+    val cpuPercent: Double,
+    val cpuCount: Int,
+    val memoryTotal: Long,
+    val memoryUsed: Long,
+    val diskTotal: Long,
+    val diskUsed: Long,
+    val gpus: List<DeviceGpuStatus> = emptyList(),
+    val error: String = "",
+)
+
+data class CameraSource(
+    val id: String,
+    val name: String,
+    val detail: String,
+    val kind: String,
+    val available: Boolean,
+)
+
+data class CameraDevice(
+    val id: String,
+    val name: String,
+    val online: Boolean,
+    val cameras: List<CameraSource> = emptyList(),
+    val error: String = "",
+)
+
 data class ActivityEntry(
     val id: String,
     val title: String,
@@ -172,6 +218,12 @@ data class UiState(
     val automations: List<AutomationSummary> = emptyList(),
     val isAutomationsLoading: Boolean = false,
     val updatingAutomationId: String? = null,
+    val sshDevices: List<SshDeviceStatus> = emptyList(),
+    val deviceStatusUpdated: String = "",
+    val isDeviceStatusLoading: Boolean = false,
+    val cameraDevices: List<CameraDevice> = emptyList(),
+    val cameraStatusUpdated: String = "",
+    val isCameraListLoading: Boolean = false,
     val input: String = "",
     val isLoading: Boolean = false,
     val isSyncing: Boolean = false,

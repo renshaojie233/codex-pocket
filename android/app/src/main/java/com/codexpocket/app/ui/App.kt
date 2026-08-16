@@ -190,6 +190,8 @@ fun CodexPocketApp(viewModel: MainViewModel) {
     val state by viewModel.state.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     var remoteRoute by remember { mutableStateOf<String?>(null) }
+    var infrastructureOpen by remember { mutableStateOf(false) }
+    var selectedCamera by remember { mutableStateOf<SelectedCamera?>(null) }
     val remoteDevice = remoteDesktopDevices.firstOrNull { it.id == remoteRoute }
 
     LaunchedEffect(state.error) {
@@ -203,6 +205,8 @@ fun CodexPocketApp(viewModel: MainViewModel) {
         AnimatedContent(
             targetState = when {
                 state.connection != ConnectionState.Connected -> "connect"
+                selectedCamera != null -> "camera-${selectedCamera?.device?.id}-${selectedCamera?.camera?.id}"
+                infrastructureOpen -> "infrastructure"
                 remoteRoute == "list" -> "remote-list"
                 remoteDevice != null -> "remote-${remoteDevice.id}"
                 state.selectedThread != null -> "chat"
@@ -212,13 +216,27 @@ fun CodexPocketApp(viewModel: MainViewModel) {
         ) { screen ->
             when (screen) {
                 "connect" -> ConnectionScreen(state, viewModel)
-                "remote-list" -> RemoteDesktopListScreen(
-                    endpoint = state.endpoint,
-                    token = state.token,
-                    onBack = { remoteRoute = null },
-                    onConnect = { remoteRoute = it.id },
+                "infrastructure" -> InfrastructureScreen(
+                    state = state,
+                    viewModel = viewModel,
+                    onBack = { infrastructureOpen = false },
+                    onOpenCamera = { device, camera -> selectedCamera = SelectedCamera(device, camera) },
                 )
-                else -> if (screen.startsWith("remote-") && remoteDevice != null) {
+                else -> if (screen.startsWith("camera-") && selectedCamera != null) {
+                    CameraViewerScreen(
+                        endpoint = state.endpoint,
+                        token = state.token,
+                        selected = selectedCamera!!,
+                        onBack = { selectedCamera = null },
+                    )
+                } else if (screen == "remote-list") {
+                    RemoteDesktopListScreen(
+                        endpoint = state.endpoint,
+                        token = state.token,
+                        onBack = { remoteRoute = null },
+                        onConnect = { remoteRoute = it.id },
+                    )
+                } else if (screen.startsWith("remote-") && remoteDevice != null) {
                     RemoteDesktopSessionScreen(
                         device = remoteDevice,
                         token = state.token,
@@ -231,6 +249,7 @@ fun CodexPocketApp(viewModel: MainViewModel) {
                         state,
                         viewModel,
                         snackbar,
+                        onOpenInfrastructure = { infrastructureOpen = true },
                         onOpenRemoteDesktop = { remoteRoute = "list" },
                     )
                 }
@@ -321,6 +340,7 @@ private fun ThreadsScreen(
     state: UiState,
     viewModel: MainViewModel,
     snackbar: SnackbarHostState,
+    onOpenInfrastructure: () -> Unit,
     onOpenRemoteDesktop: () -> Unit,
 ) {
     var showNewThread by remember { mutableStateOf(false) }
@@ -416,6 +436,9 @@ private fun ThreadsScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                item {
+                    InfrastructureLauncherCard(state, onOpenInfrastructure)
+                }
                 item {
                     RemoteDesktopLauncherCard(onClick = onOpenRemoteDesktop)
                 }
@@ -2377,18 +2400,25 @@ private fun MessageBubble(
                 ),
             ) {
                 if (message.text.isNotBlank()) {
-                    MarkdownText(
-                        markdown = message.text,
-                        color = bubbleContentColor,
-                        linkColor = if (isUser && !isFailed) {
-                            MaterialTheme.colorScheme.primaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.primary
-                        },
-                        fontSizeSp = fontSizeSp,
-                        compact = compact,
-                        renderMarkdown = !message.isStreaming || isUser,
-                    )
+                    val heartbeat = remember(message.text, isUser) {
+                        if (isUser) null else parseAutomationHeartbeat(message.text)
+                    }
+                    if (heartbeat != null) {
+                        AutomationHeartbeatCard(heartbeat, fontSizeSp)
+                    } else {
+                        MarkdownText(
+                            markdown = message.text,
+                            color = bubbleContentColor,
+                            linkColor = if (isUser && !isFailed) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                            fontSizeSp = fontSizeSp,
+                            compact = compact,
+                            renderMarkdown = !message.isStreaming || isUser,
+                        )
+                    }
                 }
                 if (message.attachments.isNotEmpty()) {
                     if (message.text.isNotBlank()) Spacer(Modifier.height(10.dp))

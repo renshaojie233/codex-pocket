@@ -499,6 +499,8 @@ internal fun isRetryableBridgeMethod(method: String): Boolean = method in setOf(
     "directories.list",
     "account.status",
     "automations.list",
+    "devices.status",
+    "cameras.list",
     "events.replay",
     // The Bridge de-duplicates these mutations by clientMessageId, making a
     // reconnect resend safe when the original acknowledgement was lost.
