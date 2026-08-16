@@ -22,3 +22,12 @@ test("wraps split JPEG frames as an MJPEG multipart response", async () => {
   assert.ok(output.includes(frameTwo));
   assert.ok(text.endsWith("--frame--\r\n"));
 });
+
+test("does not emit a fake multipart success when no camera frame arrived", async () => {
+  const transform = new MjpegMultipartTransform("frame");
+  const chunks = [];
+  transform.on("data", (chunk) => chunks.push(chunk));
+  transform.end(Buffer.from("camera failed before producing a JPEG"));
+  await once(transform, "end");
+  assert.equal(Buffer.concat(chunks).length, 0);
+});

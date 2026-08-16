@@ -134,7 +134,39 @@ def stream_realsense(args: argparse.Namespace, running) -> int:
     pipeline = rs.pipeline()
     config = rs.config()
     config.enable_device(args.realsense)
-    config.enable_stream(rs.stream.color, args.width, args.height, rs.format.bgr8, args.fps)
+    color_profiles = []
+    for sensor in target.query_sensors():
+        for profile in sensor.get_stream_profiles():
+            try:
+                video = profile.as_video_stream_profile()
+            except RuntimeError:
+                continue
+            if video.stream_type() == rs.stream.color and video.format() == rs.format.bgr8:
+                color_profiles.append(video)
+    requested_size = [
+        profile
+        for profile in color_profiles
+        if profile.width() == args.width and profile.height() == args.height
+    ]
+    candidates = requested_size or color_profiles
+    if not candidates:
+        print("RealSense 没有可用的彩色画面配置", file=sys.stderr)
+        return 5
+    selected = min(
+        candidates,
+        key=lambda profile: (
+            abs(profile.fps() - args.fps),
+            -profile.fps(),
+            abs(profile.width() * profile.height() - args.width * args.height),
+        ),
+    )
+    config.enable_stream(
+        rs.stream.color,
+        selected.width(),
+        selected.height(),
+        rs.format.bgr8,
+        selected.fps(),
+    )
     started = False
     try:
         pipeline.start(config)

@@ -31,7 +31,7 @@ import {
 
 const config = loadConfig();
 const moduleDir = dirname(fileURLToPath(import.meta.url));
-const VERSION = "0.17.0";
+const VERSION = "0.17.1";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const codexStreamPath = process.env.CODEX_STREAM_APK_PATH ||
   resolve(moduleDir, "..", "..", "outputs", "codex-stream-1.3.7.apk");
@@ -224,9 +224,14 @@ async function serveCameraStream(req, res, url) {
   const multipart = new MjpegMultipartTransform(CAMERA_BOUNDARY);
   let stderr = "";
   let closed = false;
+  let responseStarted = false;
+  const startupTimeout = setTimeout(() => {
+    if (!responseStarted && !child.killed) child.kill("SIGTERM");
+  }, 12_000);
   const close = () => {
     if (closed) return;
     closed = true;
+    clearTimeout(startupTimeout);
     multipart.destroy();
     if (!child.killed) child.kill("SIGTERM");
   };
@@ -239,20 +244,40 @@ async function serveCameraStream(req, res, url) {
     else res.end();
   });
   child.once("exit", (code) => {
-    if (code && !closed) console.error(`[camera] ${deviceId}/${cameraId} exited ${code}: ${stderr.trim()}`);
-    if (!res.writableEnded) res.end();
+    clearTimeout(startupTimeout);
+    const detail = stderr.trim() || (code ? `摄像头进程退出（${code}）` : "摄像头没有返回画面");
+    if (code && !closed) console.error(`[camera] ${deviceId}/${cameraId} exited ${code}: ${detail}`);
+    if (!responseStarted && !res.headersSent && !res.writableEnded) {
+      json(res, 503, { ok: false, error: detail.slice(0, 300) });
+    } else if (!res.writableEnded) {
+      res.end();
+    }
   });
   req.once("aborted", close);
   res.once("close", close);
 
-  res.writeHead(200, {
-    "content-type": `multipart/x-mixed-replace; boundary=${CAMERA_BOUNDARY}`,
-    "cache-control": "no-store, no-cache, must-revalidate",
-    pragma: "no-cache",
-    connection: "keep-alive",
-    "x-content-type-options": "nosniff",
+  multipart.on("data", (chunk) => {
+    if (!responseStarted) {
+      responseStarted = true;
+      clearTimeout(startupTimeout);
+      res.writeHead(200, {
+        "content-type": `multipart/x-mixed-replace; boundary=${CAMERA_BOUNDARY}`,
+        "cache-control": "no-store, no-cache, must-revalidate",
+        pragma: "no-cache",
+        connection: "keep-alive",
+        "x-content-type-options": "nosniff",
+      });
+    }
+    if (!res.writableEnded) res.write(chunk);
   });
-  child.stdout.pipe(multipart).pipe(res);
+  multipart.once("end", () => {
+    if (responseStarted && !res.writableEnded) res.end();
+  });
+  multipart.once("error", (error) => {
+    console.error(`[camera] MJPEG ${deviceId}/${cameraId}: ${error.message}`);
+    if (!res.writableEnded) res.end();
+  });
+  child.stdout.pipe(multipart);
 }
 
 function serveRemoteAsset(req, res, url) {

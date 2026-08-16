@@ -125,6 +125,7 @@ export class MjpegMultipartTransform extends Transform {
     super();
     this.boundary = boundary;
     this.pending = Buffer.alloc(0);
+    this.frameCount = 0;
   }
 
   _transform(chunk, _encoding, callback) {
@@ -143,6 +144,7 @@ export class MjpegMultipartTransform extends Transform {
       }
       const frame = this.pending.subarray(start, end + 2);
       this.pending = this.pending.subarray(end + 2);
+      this.frameCount += 1;
       this.push(Buffer.from(
         `--${this.boundary}\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.length}\r\n\r\n`,
       ));
@@ -153,7 +155,7 @@ export class MjpegMultipartTransform extends Transform {
   }
 
   _flush(callback) {
-    this.push(Buffer.from(`--${this.boundary}--\r\n`));
+    if (this.frameCount > 0) this.push(Buffer.from(`--${this.boundary}--\r\n`));
     callback();
   }
 }
