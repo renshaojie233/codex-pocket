@@ -34,7 +34,7 @@ const moduleDir = dirname(fileURLToPath(import.meta.url));
 const VERSION = "0.17.1";
 const apkPath = process.env.APK_PATH || resolve(moduleDir, "..", "..", "outputs", `codex-pocket-${VERSION}.apk`);
 const codexStreamPath = process.env.CODEX_STREAM_APK_PATH ||
-  resolve(moduleDir, "..", "..", "outputs", "codex-stream-1.3.7.apk");
+  resolve(moduleDir, "..", "..", "outputs", "codex-stream-1.3.8.apk");
 const remoteClientTemplate = readFileSync(resolve(moduleDir, "remote-client.html"), "utf8");
 const remoteAssetsRoot = realpathSync(resolve(moduleDir, "..", "node_modules", "@novnc", "novnc"));
 const codex = new CodexClient({ codexBin: config.codexBin });
@@ -628,8 +628,8 @@ const server = http.createServer(async (req, res) => {
   if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/download/codex-stream.apk") {
     serveApk(req, res, {
       path: codexStreamPath,
-      fileName: "codex-stream-1.3.7.apk",
-      etagName: "codex-stream-1.3.7",
+      fileName: "codex-stream-1.3.8.apk",
+      etagName: "codex-stream-1.3.8",
     });
     return;
   }
